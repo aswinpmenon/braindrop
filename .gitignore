@@ -1,0 +1,10 @@
+.build/
+*.o
+*.d
+*.swp
+*.xcuserdata
+xcuserdata/
+.DS_Store
+Substage.app/
+*.resolved
+DerivedData/
