@@ -84,8 +84,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showPanel() {
         guard let panel = panel, let vm = viewModel else { return }
-        vm.onAppear()
-        let ff = finderService.getFinderWindowFrame()
+        // Capture Finder context BEFORE panel takes focus — selection & folder are still live
+        let files = finderService.getSelectedFiles()
+        let cwd   = finderService.getCurrentDirectory()
+        let ff    = finderService.getFinderWindowFrame()
+        vm.onAppear(files: files, workingDir: cwd)
         lastFinderFrame = ff
         panel.reposition(finderFrame: ff, contentHeight: vm.idealHeight)
         panel.orderFrontRegardless()

@@ -135,23 +135,38 @@ class OllamaService {
 
     private func buildSystemPrompt(files: [FileContext], cwd: String?) -> String {
         var context = ""
-        if let dir = cwd { context += "Working directory: \(dir)\n" }
+
         if !files.isEmpty {
+            // Files are selected — use them as the primary target
+            if let dir = cwd { context += "Working directory: \(dir)\n" }
             context += "Selected files:\n"
             files.forEach { context += "  - \($0.path)\n" }
+        } else if let dir = cwd {
+            // No files selected — the open folder is the context
+            context += "Current folder: \(dir)\n"
+            context += "No files are selected. Operate on the folder or its contents.\n"
         }
 
-        return """
-        You are a macOS shell command generator. Your job is to convert natural language requests into a single executable shell command.
+        let fileRules = files.isEmpty ? """
+        - When asked about counts, sizes, or listing: use the current folder path above.
+        - For operations on all files in the folder, use glob patterns like "\(cwd ?? ".")"/*.ext
+        """ : """
+        - Use the exact selected file paths listed above.
+        - For multiple files, use loops or space-separated paths as appropriate.
+        """
 
-        \(context.isEmpty ? "" : "CONTEXT:\n\(context)\n")Rules:
+        return """
+        You are a macOS shell command generator. Convert the user's request into a single executable shell command.
+
+        CONTEXT:
+        \(context)
+        RULES:
         - Output ONLY the shell command. No explanation, no markdown, no code blocks, no prefixes.
-        - Use the exact file paths from the context above.
-        - Wrap all file paths in double quotes.
-        - Use standard macOS tools (ffmpeg, sips, python3, bc, zip, tar, exiftool, etc.)
-        - For multiple files, use appropriate loops or glob patterns.
-        - Prefer creating new output files rather than overwriting originals, unless the user explicitly asks to replace.
-        - Output a single line command only.
+        - Wrap all file and folder paths in double quotes.
+        - Use standard macOS tools (ls, find, wc, du, ffmpeg, sips, python3, bc, zip, tar, exiftool, etc.)
+        \(fileRules)
+        - Prefer creating new output files rather than overwriting originals, unless asked.
+        - Output a single line only.
         """
     }
 

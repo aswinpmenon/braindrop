@@ -33,21 +33,20 @@ class CommandBarViewModel: ObservableObject {
     var onOpenSettings: (() -> Void)?
 
     private let ollama    = OllamaService.shared
-    private let finder    = FinderService.shared
     private let executor  = CommandExecutor.shared
     private let previewer = CommandPreview.shared
     private let history   = CommandHistory.shared
     private let settings  = AppSettings.shared
 
-    // Called when the panel is about to become visible
-    func onAppear() {
+    // Called from AppDelegate BEFORE panel takes focus, so Finder context is still live.
+    func onAppear(files: [FileContext], workingDir: String?) {
         query        = ""
         command      = ""
         prediction   = PreviewResult()
         historyIndex = -1
         barState     = .idle
-        files        = finder.getSelectedFiles()
-        workingDir   = finder.getCurrentDirectory()
+        self.files      = files
+        self.workingDir = workingDir
         updateHeight()
     }
 
@@ -202,7 +201,7 @@ struct CommandBarView: View {
     private var barRow: some View {
         HStack(spacing: 0) {
 
-            // Left: status dot + file count
+            // Left: status dot + file count or folder name
             HStack(spacing: 5) {
                 Circle()
                     .fill(dotColor)
@@ -211,9 +210,16 @@ struct CommandBarView: View {
                     Text("\(viewModel.files.count) item\(viewModel.files.count == 1 ? "" : "s")")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let cwd = viewModel.workingDir {
+                    Text(URL(fileURLWithPath: cwd).lastPathComponent)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
-            .frame(width: 80, alignment: .leading)
+            .frame(width: 90, alignment: .leading)
             .padding(.leading, 14)
 
             // Center: text field (takes remaining space)
@@ -270,7 +276,10 @@ struct CommandBarView: View {
 
     private var dotColor: Color {
         switch viewModel.barState {
-        case .idle:       return viewModel.files.isEmpty ? Color(nsColor: .tertiaryLabelColor) : .red
+        case .idle:
+            if !viewModel.files.isEmpty { return .red }
+            if viewModel.workingDir != nil { return .blue }
+            return Color(nsColor: .tertiaryLabelColor)
         case .generating: return .orange
         case .preview:    return .blue
         case .executing:  return .orange
