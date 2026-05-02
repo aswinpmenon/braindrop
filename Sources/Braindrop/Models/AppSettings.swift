@@ -20,7 +20,7 @@ class AppSettings: ObservableObject {
         didSet { save("hotkeyModifiers", Int(hotkeyModifiers)) }
     }
 
-    // MARK: Auto-run (matching Substage's exact categories)
+    // MARK: Auto-run categories
     @Published var autoRunReadOnly: Bool          { didSet { save("autoRunReadOnly", autoRunReadOnly) } }
     @Published var autoRunFileCreation: Bool      { didSet { save("autoRunFileCreation", autoRunFileCreation) } }
     @Published var autoRunRename: Bool            { didSet { save("autoRunRename", autoRunRename) } }

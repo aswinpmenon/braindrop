@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-APP_NAME="Substage"
+APP_NAME="Braindrop"
 APP_BUNDLE="$APP_NAME.app"
 BUILD_DIR=".build/release"
 
@@ -23,7 +23,7 @@ fi
 
 echo "Code signing (ad-hoc)..."
 codesign --deep --force --sign - \
-    --entitlements "AppBundle/Substage.entitlements" \
+    --entitlements "AppBundle/Braindrop.entitlements" \
     "$APP_BUNDLE"
 
 echo ""
@@ -33,4 +33,4 @@ echo "To install: cp -r $APP_BUNDLE /Applications/"
 echo "To run:     open $APP_BUNDLE"
 echo ""
 echo "First launch: go to System Settings → Privacy & Security → Accessibility"
-echo "and grant Substage access for global hotkeys."
+echo "and grant Braindrop access for global hotkeys."

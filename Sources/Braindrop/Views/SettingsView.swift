@@ -39,7 +39,7 @@ struct GeneralTab: View {
                             .overlay(RoundedRectangle(cornerRadius: 4)
                                 .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)))
                 }
-                Text("Press ⌃Space anywhere to show/hide the Substage bar beneath the frontmost Finder window.")
+                Text("Press ⌃Space anywhere to show/hide the Braindrop bar beneath the frontmost Finder window.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -73,7 +73,7 @@ struct AutoRunTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Substage can run commands with or without confirmation")
+                Text("Braindrop can run commands with or without confirmation")
                     .font(.system(size: 13, weight: .semibold))
                 Text("What kinds of commands should run **without asking**?")
                     .font(.system(size: 13))
@@ -197,7 +197,7 @@ struct AIModelsTab: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Using llama-server (llama.cpp) — compatible with macOS 26.")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
-                    Text("Start with: bash ~/Downloads/Substage/start-llama-server.sh")
+                    Text("Start with: bash ~/Downloads/Braindrop/start-llama-server.sh")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary)
                 }
             } header: { Text("Local LLM Server") }
@@ -235,7 +235,7 @@ struct AboutTab: View {
             Image(systemName: "terminal.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
-            Text("Substage")
+            Text("Braindrop")
                 .font(.system(size: 20, weight: .semibold))
             Text("Natural language command bar for Finder")
                 .font(.system(size: 13))

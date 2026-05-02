@@ -6,7 +6,7 @@ import Combine
 class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem?
-    private var panel: SubstagePanel?
+    private var panel: BraindropPanel?
     private var settingsWindow: NSWindow?
     private var viewModel: CommandBarViewModel?
     private var trackingTimer: Timer?
@@ -34,7 +34,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusBarItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         guard let btn = statusItem?.button else { return }
-        btn.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Substage")
+        btn.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Braindrop")
         btn.image?.isTemplate = true
         btn.action = #selector(statusBarClicked)
         btn.target  = self
@@ -42,7 +42,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func statusBarClicked() {
         let menu = NSMenu()
-        let show = NSMenuItem(title: "Show Substage", action: #selector(showPanel), keyEquivalent: "")
+        let show = NSMenuItem(title: "Show Braindrop", action: #selector(showPanel), keyEquivalent: "")
         show.target = self
         menu.addItem(show)
         menu.addItem(.separator())
@@ -50,7 +50,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sett.target = self
         menu.addItem(sett)
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit Substage", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit Braindrop", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem?.menu = menu
         statusItem?.button?.performClick(nil)
         statusItem?.menu = nil
@@ -68,7 +68,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingView = NSHostingView(rootView: CommandBarView(viewModel: vm))
         hostingView.translatesAutoresizingMaskIntoConstraints = false
 
-        let p = SubstagePanel()
+        let p = BraindropPanel()
         panel = p
         p.contentView = hostingView
 
@@ -134,7 +134,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let w = settingsWindow, w.isVisible { w.makeKeyAndOrderFront(nil); return }
         let ctrl = NSHostingController(rootView: SettingsView())
         let win  = NSWindow(contentViewController: ctrl)
-        win.title     = "Substage"
+        win.title     = "Braindrop"
         win.styleMask = [.titled, .closable, .miniaturizable]
         win.setContentSize(NSSize(width: 540, height: 480))
         win.center()

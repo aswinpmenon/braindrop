@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "Substage",
+    name: "Braindrop",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "Substage",
-            path: "Sources/Substage"
+            name: "Braindrop",
+            path: "Sources/Braindrop"
         )
     ]
 )

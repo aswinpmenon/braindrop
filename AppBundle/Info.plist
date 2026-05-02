@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>design.selkie.substage</string>
+    <string>io.braindrop.app</string>
     <key>CFBundleName</key>
-    <string>Substage</string>
+    <string>Braindrop</string>
     <key>CFBundleDisplayName</key>
-    <string>Substage</string>
+    <string>Braindrop</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleShortVersionString</key>
@@ -15,16 +15,16 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>Substage</string>
+    <string>Braindrop</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>
-    <string>Substage needs to access Finder to read your selected files and folder context.</string>
+    <string>Braindrop needs to access Finder to read your selected files and folder context.</string>
     <key>NSAppleScriptEnabled</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>© 2025 Substage</string>
+    <string>© 2025 Braindrop</string>
 </dict>
 </plist>

@@ -16,13 +16,13 @@ private func hotkeyEventHandler(
         nil,
         &hotKeyID
     )
-    if hotKeyID.signature == substageSignature && hotKeyID.id == 1 {
+    if hotKeyID.signature == braindropSignature && hotKeyID.id == 1 {
         DispatchQueue.main.async { HotkeyManager.shared.triggerHotkey() }
     }
     return noErr
 }
 
-private let substageSignature: FourCharCode = {
+private let braindropSignature: FourCharCode = {
     var result: FourCharCode = 0
     for char in "subS".utf16 { result = (result << 8) + FourCharCode(char) }
     return result
@@ -45,7 +45,7 @@ class HotkeyManager {
         )
         InstallEventHandler(GetApplicationEventTarget(), hotkeyEventHandler, 1, &spec, nil, &eventHandlerRef)
 
-        let id = EventHotKeyID(signature: substageSignature, id: 1)
+        let id = EventHotKeyID(signature: braindropSignature, id: 1)
         RegisterEventHotKey(keyCode, modifiers, id, GetApplicationEventTarget(), 0, &hotKeyRef)
     }
 

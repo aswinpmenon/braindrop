@@ -27,7 +27,7 @@ class CommandBarViewModel: ObservableObject {
     @Published var historyIndex = -1
 
     // Drives panel height from outside
-    @Published var idealHeight: CGFloat = SubstagePanel.barRowHeight
+    @Published var idealHeight: CGFloat = BraindropPanel.barRowHeight
 
     var onClose:        (() -> Void)?
     var onOpenSettings: (() -> Void)?
@@ -132,7 +132,7 @@ class CommandBarViewModel: ObservableObject {
     }
 
     private func computeHeight() -> CGFloat {
-        let row = SubstagePanel.barRowHeight
+        let row = BraindropPanel.barRowHeight
         switch barState {
         case .idle:
             return row
@@ -182,7 +182,7 @@ struct CommandBarView: View {
 
             VStack(spacing: 0) {
                 barRow
-                    .frame(height: SubstagePanel.barRowHeight)
+                    .frame(height: BraindropPanel.barRowHeight)
 
                 if viewModel.barState != .idle && viewModel.barState != .generating {
                     Divider()

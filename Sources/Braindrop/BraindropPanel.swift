@@ -1,6 +1,6 @@
 import AppKit
 
-class SubstagePanel: NSPanel {
+class BraindropPanel: NSPanel {
 
     static let minWidth: CGFloat  = 480
     static let maxWidth: CGFloat  = 1400
@@ -8,7 +8,7 @@ class SubstagePanel: NSPanel {
 
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: SubstagePanel.barRowHeight),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: BraindropPanel.barRowHeight),
             styleMask: [.nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -41,7 +41,7 @@ class SubstagePanel: NSPanel {
             rawX = sv.midX - 300
         }
 
-        let w = max(SubstagePanel.minWidth, min(rawW, SubstagePanel.maxWidth))
+        let w = max(BraindropPanel.minWidth, min(rawW, BraindropPanel.maxWidth))
         let x = max(sv.minX, min(rawX, sv.maxX - w))
 
         let y: CGFloat

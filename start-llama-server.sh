@@ -1,6 +1,6 @@
 #!/bin/bash
-# Starts llama-server (llama.cpp) for Substage
-# Run this once before using Substage, or add it to your login items.
+# Starts llama-server (llama.cpp) for Braindrop
+# Run this once before using Braindrop, or add it to your login items.
 
 MODEL_BLOB="$HOME/.ollama/models/blobs/sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff"
 PORT=8080
