@@ -23,7 +23,7 @@ class AgentRunner {
 
     private let llm      = LLMService.shared
     private let executor = CommandExecutor.shared
-    private let maxSteps = 2   // conservative — 1.5B model loops if given more rope
+    private let maxSteps = 3
 
     func run(
         query: String,
@@ -32,26 +32,25 @@ class AgentRunner {
         onProgress: @escaping (AgentProgress) -> Void
     ) async throws -> AgentResult {
 
-        // Gate: only allow probing for queries that genuinely need file discovery.
-        // Simple queries go straight to a direct answer — no probing, no delay.
+        // Simple tasks: skip agentic loop entirely — one LLM call, instant response.
         guard needsProbing(query: query) else {
             let resp = try await llm.generate(
                 query: query, files: files, cwd: cwd,
-                probeContext: "", forceDirectAnswer: true
+                probeHistory: [], forceDirectAnswer: true
             )
             if case .direct(let cmd) = resp { return AgentResult(command: cmd, steps: []) }
             throw LLMError.invalidResponse
         }
 
-        // Agentic loop for queries that genuinely need runtime discovery
+        // Agentic loop: probe → observe → act, using proper multi-turn conversation.
         var steps: [AgentStep] = []
-        var probeContext = ""
+        var probeHistory: [(cmd: String, output: String)] = []
         var lastProbeCmd = ""
 
         for stepIndex in 1...maxSteps {
             let response = try await llm.generate(
                 query: query, files: files, cwd: cwd,
-                probeContext: probeContext, forceDirectAnswer: false
+                probeHistory: probeHistory, forceDirectAnswer: false
             )
 
             switch response {
@@ -59,46 +58,46 @@ class AgentRunner {
                 return AgentResult(command: cmd, steps: steps)
 
             case .probe(let probeCmd):
-                // Safety: if model returns the same probe twice, stop looping
-                if probeCmd == lastProbeCmd {
-                    break
-                }
+                // Stop if the model is stuck repeating the same probe
+                if probeCmd == lastProbeCmd { break }
                 lastProbeCmd = probeCmd
 
                 onProgress(.probing(step: stepIndex, command: probeCmd))
+
                 let result = try await executor.executeProbe(command: probeCmd, workingDirectory: cwd)
                 let out = result.displayOutput
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .prefix(2000)
-                let trimmedOut = out.isEmpty ? "(no output)" : String(out)
+                let trimmedOut = String(out.prefix(2000).isEmpty ? "(no output)" : out.prefix(2000))
 
                 steps.append(AgentStep(index: stepIndex, command: probeCmd, output: trimmedOut))
-                probeContext += "\n[Step \(stepIndex)] $ \(probeCmd)\n\(trimmedOut)\n"
+                probeHistory.append((cmd: probeCmd, output: trimmedOut))
             }
         }
 
-        // Exceeded max probes — force final answer with all gathered context
+        // Max probes reached — force a final answer with all gathered context.
         onProgress(.finalizing)
         let final = try await llm.generate(
             query: query, files: files, cwd: cwd,
-            probeContext: probeContext, forceDirectAnswer: true
+            probeHistory: probeHistory, forceDirectAnswer: true
         )
-        if case .direct(let cmd) = final {
-            return AgentResult(command: cmd, steps: steps)
-        }
+        if case .direct(let cmd) = final { return AgentResult(command: cmd, steps: steps) }
         throw LLMError.invalidResponse
     }
 
-    // Only enable the probe loop for tasks that must discover file names, sizes,
-    // or other runtime information that isn't already in FileContext.
+    // Probe only for tasks where the target can't be embedded in a single pipeline.
+    // "find the largest file and zip it" needs to know the filename before zipping.
+    // "how many files", "word count", "convert this" — all solvable without probing.
     private func needsProbing(query: String) -> Bool {
         let q = query.lowercased()
         let triggers = [
-            "largest", "smallest", "biggest", "heaviest",
-            "newest", "oldest", "most recent", "latest",
-            "find and", "find the", "which file", "which files",
+            // "find X then do something else to it" — need name at runtime
+            "zip the largest", "zip the newest", "zip the oldest", "zip the biggest",
+            "move the largest", "move the newest", "move the oldest",
+            "delete the largest", "copy the largest",
+            "find and zip", "find and move", "find and copy",
+            "find and delete", "find and rename", "find and compress",
+            // Genuinely need runtime comparison
             "duplicate", "duplicates", "find duplicate",
-            "most files", "fewest", "longest", "shortest"
         ]
         return triggers.contains { q.contains($0) }
     }

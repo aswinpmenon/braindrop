@@ -66,35 +66,38 @@ class LLMService {
 
     // MARK: - Main entry point (used by AgentRunner)
 
+    /// `probeHistory` is a list of (probeCommand, probeOutput) pairs from prior steps.
+    /// Using proper multi-turn assistant/user turns so the model reasons about each result.
     func generate(
         query: String,
         files: [FileContext],
         cwd: String?,
-        probeContext: String,
+        probeHistory: [(cmd: String, output: String)],
         forceDirectAnswer: Bool
     ) async throws -> LLMResponseKind {
 
-        let system = buildSystemPrompt(files: files, cwd: cwd, allowProbe: !forceDirectAnswer)
+        let allowProbe = !forceDirectAnswer && probeHistory.isEmpty
+        let system = buildSystemPrompt(files: files, cwd: cwd, allowProbe: allowProbe)
         var messages: [ChatMessage] = [ChatMessage(role: "system", content: system)]
 
-        if probeContext.isEmpty {
-            messages.append(ChatMessage(role: "user", content: query))
-        } else {
-            // Inject probe context into the user turn so the model sees what was gathered
-            let userContent = """
-            Task: \(query)
+        // First user turn is always the raw query
+        messages.append(ChatMessage(role: "user", content: query))
 
-            Information gathered so far:
-            \(probeContext)
-            Now generate the final shell command.
-            """
-            messages.append(ChatMessage(role: "user", content: userContent))
+        // Replay each probe step as proper assistant → user turns
+        for (index, step) in probeHistory.enumerated() {
+            messages.append(ChatMessage(role: "assistant", content: "PROBE: \(step.cmd)"))
+            let isLast = index == probeHistory.count - 1
+            let followUp = isLast
+                ? "Command output:\n\(step.output)\n\nNow output ONLY the final shell command to complete the task."
+                : "Command output:\n\(step.output)\n\nContinue."
+            messages.append(ChatMessage(role: "user", content: followUp))
         }
 
-        let raw = try await callAPI(messages: messages, maxTokens: 150)
+        let raw = try await callAPI(messages: messages, maxTokens: 160)
         let text = cleanResponse(raw)
 
-        if !forceDirectAnswer && text.lowercased().hasPrefix("probe:") {
+        // Only parse PROBE: on the first call (no prior history, probe allowed)
+        if allowProbe && text.lowercased().hasPrefix("probe:") {
             let cmd = cleanCommand(String(text.dropFirst(6)))
             return .probe(cmd)
         }
@@ -198,45 +201,64 @@ class LLMService {
             """
         }
 
-        // ── Probe protocol (only injected when the AgentRunner enables it) ───
+        // ── Probe protocol (only injected when AgentRunner enables it) ──────
         let probeSection = allowProbe ? """
 
-        AGENTIC MODE — you may need one discovery step first:
-        If you must know a specific filename or size at runtime before acting, output:
-        PROBE: <shell command>
-        You will receive the output and then produce the final command.
-        Only use PROBE when the exact target file is unknown (e.g. "largest file", "oldest file").
-        Never use PROBE for counting, summarising, converting, or any task where the file path is already known.
+        AGENTIC MODE:
+        If you must discover which file to act on before you can write the command, output:
+        PROBE: <command that returns ONLY the file path or data you need>
+        You will see the output and then produce the final command.
+        IMPORTANT: The PROBE command must ONLY return information — never include the action (zip, move, delete) in the probe.
+        After seeing the probe output you write the action command separately.
+        Example — "zip the largest file":
+          PROBE: find "DIR" -maxdepth 1 -type f -exec du -b {} + | sort -rn | head -1 | awk '{print $2}'
+          (probe returns: /path/bigfile.mp4)
+          Final command: zip "bigfile.zip" "/path/bigfile.mp4"
         """ : ""
 
         return """
-        You are a macOS terminal expert. Output ONE shell command that fulfils the user's request.
+        You are a macOS shell expert. Output ONE shell command that fulfils the request.
 
         CONTEXT:
         \(context)
-        TOOL REFERENCE (use the right tool for the task):
-        PDF text    → pdftotext "file.pdf" - | wc -w          (word count)
-                    → pdftotext "file.pdf" "out.txt"           (extract text)
-                    → pdfseparate -f 1 -l 3 "in.pdf" "pg%d.pdf" (split pages, needs: brew install poppler)
-                    → pdfunite p1.pdf p2.pdf "out.pdf"         (merge PDFs)
-                    → gs -sDEVICE=pdfwrite -dPDFSETTINGS=/ebook -o "out.pdf" "in.pdf" (compress)
-        PDF info    → pdfinfo "file.pdf"  |  mdls -name kMDItemNumberOfPages "file.pdf"
-        Images      → sips -Z 1024 "img.jpg"                   (resize, built-in)
-                    → sips -s format jpeg "img.png" --out "img.jpg" (convert, built-in)
-                    → sips -g pixelWidth -g pixelHeight "img.jpg"   (dimensions)
-        Video       → ffmpeg -i "in.mov" "out.mp4"             (convert)
-                    → ffmpeg -i "in.mp4" -vn "out.mp3"         (extract audio)
-                    → ffprobe -v quiet -show_format "file.mp4"  (info)
-        Archives    → zip "out.zip" "file"  |  unzip "a.zip" -d "dir/"
-        Text/count  → wc -w "file"  |  wc -l "file"  |  wc -c "file"
-        Metadata    → mdls "file"  |  exiftool "file"  |  file "file"
-        Docs        → textutil -convert txt "file.docx"        (built-in)
+        COMMAND PATTERNS — match the task to the right pattern:
+
+        Find largest file  → find "DIR" -maxdepth 1 -type f -exec du -sh {} + | sort -rh | head -1
+        Find newest file   → find "DIR" -maxdepth 1 -type f -newer /tmp -exec ls -lt {} + | head -2
+        Find oldest file   → find "DIR" -maxdepth 1 -type f -exec ls -lt {} + | tail -1
+        Count files        → find "DIR" -maxdepth 1 -type f | wc -l
+        Count by type      → find "DIR" -maxdepth 1 -name "*.pdf" | wc -l
+        Disk usage         → du -sh "DIR"  |  du -sh "DIR"/* | sort -rh | head -10
+        NEVER use ls -l | sort to find file sizes — ls output is not sortable by size.
+
+        PDF word count     → pdftotext "file.pdf" - | wc -w
+        PDF page count     → pdfinfo "file.pdf" | grep Pages
+        PDF extract text   → pdftotext "file.pdf" "out.txt"
+        PDF split pages    → pdfseparate -f 1 -l 5 "in.pdf" "page-%d.pdf"
+        PDF merge          → pdfunite a.pdf b.pdf "out.pdf"
+        PDF compress       → gs -sDEVICE=pdfwrite -dPDFSETTINGS=/ebook -q -o "out.pdf" "in.pdf"
+        NEVER use grep or strings to read PDF text — always use pdftotext.
+
+        Image resize       → sips -Z 1024 "img.jpg"
+        Image convert      → sips -s format jpeg "img.png" --out "img.jpg"
+        Image dimensions   → sips -g pixelWidth -g pixelHeight "img.jpg"
+        Image compress     → sips -s formatOptions 70 "img.jpg" --out "compressed.jpg"
+        Batch resize       → for f in "DIR"/*.jpg; do sips -Z 800 "$f"; done
+
+        Video convert      → ffmpeg -i "in.mov" -c:v libx264 "out.mp4"
+        Extract audio      → ffmpeg -i "in.mp4" -vn -q:a 0 "out.mp3"
+        Video trim         → ffmpeg -i "in.mp4" -ss 00:01:00 -to 00:02:30 -c copy "clip.mp4"
+        Video info         → ffprobe -v quiet -print_format json -show_format -show_streams "file.mp4"
+
+        File metadata      → mdls "file"  |  exiftool "file"  |  file "file"
+        Word/line count    → wc -w "file"  |  wc -l "file"
+        Doc to text        → textutil -convert txt "file.docx"
+        Archive            → zip -r "out.zip" "folder/"  |  tar czf "out.tar.gz" "folder/"
         \(fileRules)
-        STRICT RULES:
-        - Output ONLY the shell command. No prose, no markdown, no code fences.
-        - Quote every path with double quotes.
+        RULES:
+        - Output ONLY the shell command. No explanation, no markdown, no code fences.
+        - Wrap every path in double quotes.
         - Single line only.
-        - Never use grep to read PDF content — use pdftotext first.
         \(probeSection)
         """
     }
