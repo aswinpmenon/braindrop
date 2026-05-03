@@ -89,4 +89,34 @@ class CommandExecutor {
         runningProcess?.terminate()
         runningProcess = nil
     }
+
+    // Lightweight probe execution: 10s timeout, no cancel handle, output capped at 4 KB.
+    func executeProbe(command: String, workingDirectory: String?) async throws -> ExecutionResult {
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                process.arguments = ["-c", command]
+                process.standardOutput = outPipe
+                process.standardError = errPipe
+                process.currentDirectoryURL = workingDirectory.map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: NSHomeDirectory())
+                var env = ProcessInfo.processInfo.environment
+                let paths = ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+                env["PATH"] = (paths + [env["PATH"] ?? ""]).joined(separator: ":")
+                process.environment = env
+                let timeoutItem = DispatchWorkItem { process.terminate() }
+                do { try process.run() } catch { continuation.resume(throwing: error); return }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: timeoutItem)
+                process.waitUntilExit()
+                timeoutItem.cancel()
+                let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: outData.prefix(4096), encoding: .utf8) ?? ""
+                let error  = String(data: errData.prefix(512),  encoding: .utf8) ?? ""
+                continuation.resume(returning: ExecutionResult(command: command, output: output, error: error, exitCode: process.terminationStatus))
+            }
+        }
+    }
 }

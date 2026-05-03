@@ -6,10 +6,22 @@ import AppKit
 enum BarState: Equatable {
     case idle
     case generating
+    case probing(Int, String)   // step number, probe command
     case preview
     case executing
     case result(String)
     case error(String)
+
+    static func == (lhs: BarState, rhs: BarState) -> Bool {
+        switch (lhs, rhs) {
+        case (.idle, .idle), (.generating, .generating),
+             (.preview, .preview), (.executing, .executing): return true
+        case (.probing(let a, let b), .probing(let c, let d)): return a == c && b == d
+        case (.result(let a), .result(let b)): return a == b
+        case (.error(let a), .error(let b)): return a == b
+        default: return false
+        }
+    }
 }
 
 // MARK: - ViewModel
@@ -17,32 +29,30 @@ enum BarState: Equatable {
 @MainActor
 class CommandBarViewModel: ObservableObject {
 
-    // UI state
     @Published var query       = ""
     @Published var barState: BarState = .idle
     @Published var command     = ""
     @Published var prediction  = PreviewResult()
+    @Published var agentSteps: [AgentStep] = []
     @Published var files: [FileContext] = []
-    @Published var workingDir: String?  = nil
+    @Published var workingDir: String? = nil
     @Published var historyIndex = -1
-
-    // Drives panel height from outside
     @Published var idealHeight: CGFloat = BraindropPanel.barRowHeight
 
     var onClose:        (() -> Void)?
     var onOpenSettings: (() -> Void)?
 
-    private let llm       = LLMService.shared
-    private let executor  = CommandExecutor.shared
+    private let agent    = AgentRunner.shared
+    private let executor = CommandExecutor.shared
     private let previewer = CommandPreview.shared
-    private let history   = CommandHistory.shared
-    private let settings  = AppSettings.shared
+    private let history  = CommandHistory.shared
+    private let settings = AppSettings.shared
 
-    // Called from AppDelegate BEFORE panel takes focus, so Finder context is still live.
     func onAppear(files: [FileContext], workingDir: String?) {
         query        = ""
         command      = ""
         prediction   = PreviewResult()
+        agentSteps   = []
         historyIndex = -1
         barState     = .idle
         self.files      = files
@@ -51,10 +61,11 @@ class CommandBarViewModel: ObservableObject {
     }
 
     func reset() {
-        barState = .idle
-        query    = ""
-        command  = ""
+        barState   = .idle
+        query      = ""
+        command    = ""
         prediction = PreviewResult()
+        agentSteps = []
         updateHeight()
     }
 
@@ -63,18 +74,34 @@ class CommandBarViewModel: ObservableObject {
     func generate() {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return }
-        barState = .generating
+        barState   = .generating
+        agentSteps = []
         updateHeight()
         let fs = files; let wd = workingDir
         Task {
             do {
-                let cmd  = try await llm.generateCommand(query: q, files: fs, workingDirectory: wd)
-                let prev = previewer.analyze(command: cmd, context: fs)
-                command    = cmd
-                prediction = prev
+                let result = try await agent.run(
+                    query: q,
+                    files: fs,
+                    cwd: wd,
+                    onProgress: { [weak self] progress in
+                        guard let self = self else { return }
+                        switch progress {
+                        case .probing(let step, let cmd):
+                            self.barState = .probing(step, cmd)
+                            self.updateHeight()
+                        case .finalizing:
+                            self.barState = .generating
+                            self.updateHeight()
+                        }
+                    }
+                )
+                command    = result.command
+                prediction = previewer.analyze(command: result.command, context: fs)
+                agentSteps = result.steps
                 barState   = .preview
                 updateHeight()
-                if shouldAutoRun(prev.category) { await run() }
+                if shouldAutoRun(prediction.category) { await run() }
             } catch {
                 barState = .error(error.localizedDescription)
                 updateHeight()
@@ -91,11 +118,7 @@ class CommandBarViewModel: ObservableObject {
             let out = r.displayOutput.isEmpty
                 ? (r.succeeded ? "Done." : "Exited with code \(r.exitCode)")
                 : r.displayOutput
-            if r.succeeded {
-                barState = .result(out)
-            } else {
-                barState = .error(r.error.isEmpty ? "Command failed (exit \(r.exitCode))" : r.error)
-            }
+            barState = r.succeeded ? .result(out) : .error(r.error.isEmpty ? "Command failed (exit \(r.exitCode))" : r.error)
         } catch {
             barState = .error(error.localizedDescription)
         }
@@ -103,9 +126,10 @@ class CommandBarViewModel: ObservableObject {
     }
 
     func reject() {
-        barState = .idle
-        command = ""
+        barState   = .idle
+        command    = ""
         prediction = PreviewResult()
+        agentSteps = []
         updateHeight()
     }
 
@@ -125,29 +149,35 @@ class CommandBarViewModel: ObservableObject {
         else if historyIndex == 0 { historyIndex = -1; query = "" }
     }
 
-    // MARK: - Height calculation
+    // MARK: - Height
 
-    func updateHeight() {
-        idealHeight = computeHeight()
-    }
+    func updateHeight() { idealHeight = computeHeight() }
 
     private func computeHeight() -> CGFloat {
         let row = BraindropPanel.barRowHeight
         switch barState {
-        case .idle:
+        case .idle, .generating:
             return row
-        case .generating:
-            return row
+
+        case .probing:
+            return row + 1 + 44
+
         case .preview:
+            let stepRows  = CGFloat(agentSteps.count) * 30
+            let stepDivider: CGFloat = agentSteps.isEmpty ? 0 : (1 + stepRows + 1)
             let effectRows = CGFloat(max(1, prediction.effects.count))
             let warnRows   = CGFloat(prediction.warnings.count)
-            // bar row + divider + command block + divider + effects + warnings + divider + button row
-            return row + 1 + 44 + 1 + effectRows * 28 + warnRows * 22 + 1 + 52
+            return row + 1 + stepDivider + 44 + 1 + effectRows * 28 + warnRows * 22 + 1 + 52
+
         case .executing:
             return row + 1 + 44
+
         case .result(let out):
+            let hasSteps = !agentSteps.isEmpty
+            let stepH: CGFloat = hasSteps ? (1 + CGFloat(agentSteps.count) * 30 + 1) : 0
             let lines = CGFloat(out.components(separatedBy: "\n").prefix(6).count)
-            return row + 1 + max(40, lines * 18 + 16) + 1 + 36
+            return row + 1 + stepH + max(40, lines * 18 + 16) + 1 + 36
+
         case .error:
             return row + 1 + 52
         }
@@ -172,7 +202,6 @@ struct CommandBarView: View {
 
     var body: some View {
         ZStack {
-            // Window chrome: white card with shadow border
             RoundedRectangle(cornerRadius: 9)
                 .fill(Color(nsColor: .windowBackgroundColor))
                 .overlay(
@@ -181,10 +210,10 @@ struct CommandBarView: View {
                 )
 
             VStack(spacing: 0) {
-                barRow
-                    .frame(height: BraindropPanel.barRowHeight)
+                barRow.frame(height: BraindropPanel.barRowHeight)
 
-                if viewModel.barState != .idle && viewModel.barState != .generating {
+                let isExpanded = viewModel.barState != .idle && viewModel.barState != .generating
+                if isExpanded {
                     Divider()
                     expandedSection
                 }
@@ -198,19 +227,15 @@ struct CommandBarView: View {
     }
 
     // MARK: Bar row
+
     private var barRow: some View {
         HStack(spacing: 0) {
 
-            // Left: status dot + file count or folder name
+            // Left: dot + context label
             HStack(spacing: 5) {
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: 8, height: 8)
+                Circle().fill(dotColor).frame(width: 8, height: 8)
                 if !viewModel.files.isEmpty {
-                    Text("\(viewModel.files.count) item\(viewModel.files.count == 1 ? "" : "s")")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    fileCountLabel
                 } else if let cwd = viewModel.workingDir {
                     Text(URL(fileURLWithPath: cwd).lastPathComponent)
                         .font(.system(size: 12))
@@ -222,7 +247,7 @@ struct CommandBarView: View {
             .frame(width: 90, alignment: .leading)
             .padding(.leading, 14)
 
-            // Center: text field (takes remaining space)
+            // Center: text field
             ZStack {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color(nsColor: .controlBackgroundColor))
@@ -232,45 +257,62 @@ struct CommandBarView: View {
                     )
 
                 HStack(spacing: 6) {
-                    if viewModel.barState == .generating {
-                        ProgressView()
-                            .scaleEffect(0.55)
-                            .progressViewStyle(.circular)
+                    if viewModel.barState == .generating || viewModel.barState == .probing(0, "") {
+                        ProgressView().scaleEffect(0.55).progressViewStyle(.circular)
+                    } else if case .probing = viewModel.barState {
+                        ProgressView().scaleEffect(0.55).progressViewStyle(.circular)
                     }
-                    TextField("Enter query or command", text: $viewModel.query)
+                    TextField("Ask anything about your files…", text: $viewModel.query)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
                         .focused($focused)
                         .onSubmit { viewModel.generate() }
                         .onKeyPress(.upArrow)   { viewModel.historyUp();   return .handled }
                         .onKeyPress(.downArrow) { viewModel.historyDown(); return .handled }
-                        .disabled(viewModel.barState == .generating || viewModel.barState == .executing)
+                        .disabled({
+                            switch viewModel.barState {
+                            case .generating, .probing, .executing: return true
+                            default: return false
+                            }
+                        }())
                 }
                 .padding(.horizontal, 8)
             }
             .frame(height: 26)
             .padding(.horizontal, 10)
 
-            // Right: model name + icons
+            // Right: model + history + settings
             HStack(spacing: 10) {
                 modelButton
                 Button { CommandHistory.shared.entries.isEmpty ? () : viewModel.historyUp() } label: {
-                    Image(systemName: "clock")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "clock").font(.system(size: 13)).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .help("Command history (↑)")
+                .buttonStyle(.plain).help("Command history (↑)")
 
                 Button { viewModel.onOpenSettings?() } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "gearshape").font(.system(size: 13)).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .help("Settings")
+                .buttonStyle(.plain).help("Settings")
             }
             .padding(.trailing, 12)
+        }
+    }
+
+    // Rich file count label with type breakdown
+    @ViewBuilder
+    private var fileCountLabel: some View {
+        let files = viewModel.files
+        let byKind = Dictionary(grouping: files) { $0.fileKind ?? $0.ext.uppercased() }
+        if byKind.keys.count == 1, let kind = byKind.keys.first {
+            Text("\(files.count) \(kind)")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        } else {
+            Text("\(files.count) files")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 
@@ -281,6 +323,7 @@ struct CommandBarView: View {
             if viewModel.workingDir != nil { return .blue }
             return Color(nsColor: .tertiaryLabelColor)
         case .generating: return .orange
+        case .probing:    return .orange
         case .preview:    return .blue
         case .executing:  return .orange
         case .result:     return .green
@@ -290,9 +333,7 @@ struct CommandBarView: View {
 
     private var modelButton: some View {
         Menu {
-            Text("LLM Model")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            Text("Model").font(.system(size: 11)).foregroundStyle(.secondary)
             Divider()
             ForEach([
                 "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit",
@@ -307,22 +348,19 @@ struct CommandBarView: View {
         } label: {
             HStack(spacing: 3) {
                 Text(AppSettings.shared.ollamaModel.components(separatedBy: "/").last ?? AppSettings.shared.ollamaModel)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium)).foregroundStyle(.tertiary)
             }
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
+        .menuStyle(.borderlessButton).fixedSize()
     }
 
     // MARK: Expanded section
+
     @ViewBuilder
     private var expandedSection: some View {
         switch viewModel.barState {
+        case .probing(let step, let cmd): probingSection(step: step, command: cmd)
         case .preview:    previewSection
         case .executing:  executingSection
         case .result(let o): resultSection(output: o)
@@ -331,24 +369,48 @@ struct CommandBarView: View {
         }
     }
 
+    // MARK: Probing
+
+    private func probingSection(step: Int, command: String) -> some View {
+        HStack(spacing: 10) {
+            ProgressView().scaleEffect(0.6)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Step \(step) · gathering information")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(command)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+    }
+
     // MARK: Preview
+
     private var previewSection: some View {
         VStack(spacing: 0) {
-            // Command line
+            // Agent steps trail (shown if any probes were taken)
+            if !viewModel.agentSteps.isEmpty {
+                agentStepsList(viewModel.agentSteps)
+                Divider()
+            }
+
+            // Final command line
             HStack(spacing: 8) {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
                 Text(viewModel.command)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
+                    .font(.system(size: 12, design: .monospaced)).foregroundStyle(.primary)
+                    .lineLimit(2).textSelection(.enabled)
                 Spacer()
                 copyButton
             }
-            .padding(.horizontal, 14)
-            .frame(height: 44)
+            .padding(.horizontal, 14).frame(height: 44)
 
             if !viewModel.prediction.effects.isEmpty || !viewModel.prediction.warnings.isEmpty {
                 Divider()
@@ -356,9 +418,36 @@ struct CommandBarView: View {
             }
 
             Divider()
-            actionButtons
-                .frame(height: 52)
+            actionButtons.frame(height: 52)
         }
+    }
+
+    private func agentStepsList(_ steps: [AgentStep]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(steps) { step in
+                HStack(spacing: 8) {
+                    Text("\(step.index)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 16, height: 16)
+                        .background(Circle().fill(Color.orange.opacity(0.8)))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(step.command)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                        Text(step.output.prefix(80))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 30)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private var effectsList: some View {
@@ -376,25 +465,19 @@ struct CommandBarView: View {
                     Text(effect.label)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        .lineLimit(1).truncationMode(.middle)
                     Spacer()
                 }
-                .padding(.horizontal, 14)
-                .frame(height: 28)
+                .padding(.horizontal, 14).frame(height: 28)
             }
             ForEach(viewModel.prediction.warnings, id: \.self) { w in
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.orange)
-                    Text(w)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10)).foregroundStyle(.orange)
+                    Text(w).font(.system(size: 11)).foregroundStyle(.secondary)
                     Spacer()
                 }
-                .padding(.horizontal, 14)
-                .frame(height: 22)
+                .padding(.horizontal, 14).frame(height: 22)
             }
         }
     }
@@ -415,37 +498,37 @@ struct CommandBarView: View {
     }
 
     // MARK: Executing
+
     private var executingSection: some View {
         HStack(spacing: 10) {
             ProgressView().scaleEffect(0.6)
-            Text("Running…")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+            Text("Running…").font(.system(size: 12)).foregroundStyle(.secondary)
             Text(viewModel.command)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary)
+                .lineLimit(1).truncationMode(.middle)
             Spacer()
-            Button("Cancel") { viewModel.cancelExecution() }
-                .buttonStyle(BarSecondaryButtonStyle())
+            Button("Cancel") { viewModel.cancelExecution() }.buttonStyle(BarSecondaryButtonStyle())
         }
-        .padding(.horizontal, 14)
-        .frame(height: 44)
+        .padding(.horizontal, 14).frame(height: 44)
     }
 
     // MARK: Result
+
     private func resultSection(output: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Agent steps (collapsed summary)
+            if !viewModel.agentSteps.isEmpty {
+                agentStepsList(viewModel.agentSteps)
+                Divider()
+            }
+
             HStack(spacing: 8) {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 Text("Done").font(.system(size: 12, weight: .medium))
                 Spacer()
-                Button("Dismiss") { viewModel.reset() }
-                    .buttonStyle(BarSecondaryButtonStyle())
+                Button("Dismiss") { viewModel.reset() }.buttonStyle(BarSecondaryButtonStyle())
             }
-            .padding(.horizontal, 14)
-            .frame(height: 36)
+            .padding(.horizontal, 14).frame(height: 36)
 
             if output != "Done." {
                 Divider()
@@ -455,8 +538,7 @@ struct CommandBarView: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
                 }
                 .frame(maxHeight: 90)
             }
@@ -464,44 +546,38 @@ struct CommandBarView: View {
     }
 
     // MARK: Error
+
     private func errorSection(message: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
-                .padding(.top, 1)
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red).padding(.top, 1)
             Text(message)
-                .font(.system(size: 12))
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineLimit(3)
+                .font(.system(size: 12)).foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true).lineLimit(3)
             Spacer()
-            Button("Dismiss") { viewModel.reset() }
-                .buttonStyle(BarSecondaryButtonStyle())
+            Button("Dismiss") { viewModel.reset() }.buttonStyle(BarSecondaryButtonStyle())
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14).padding(.vertical, 14)
     }
 
     // MARK: Helpers
+
     private var copyButton: some View {
         Button {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(viewModel.command, forType: .string)
         } label: {
-            Image(systemName: "doc.on.doc")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
+            Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(.tertiary)
         }
-        .buttonStyle(.plain)
-        .help("Copy command")
+        .buttonStyle(.plain).help("Copy command")
     }
 
     private func effectColor(_ e: FileEffect) -> Color {
         switch e {
-        case .created: return .green
+        case .created:  return .green
         case .modified: return .orange
-        case .deleted: return .red
-        case .moved: return .blue
-        case .read: return Color(nsColor: .secondaryLabelColor)
+        case .deleted:  return .red
+        case .moved:    return .blue
+        case .read:     return Color(nsColor: .secondaryLabelColor)
         }
     }
 }
@@ -513,10 +589,8 @@ struct BarPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .medium))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 5)
-                .fill(destructive ? Color.red : Color.accentColor))
+            .padding(.horizontal, 14).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 5).fill(destructive ? Color.red : Color.accentColor))
             .foregroundStyle(.white)
             .opacity(configuration.isPressed ? 0.85 : 1)
     }
@@ -526,10 +600,8 @@ struct BarSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 5)
-                .fill(Color(nsColor: .controlColor)))
+            .padding(.horizontal, 12).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 5).fill(Color(nsColor: .controlColor)))
             .foregroundStyle(Color(nsColor: .labelColor))
             .opacity(configuration.isPressed ? 0.7 : 1)
     }
