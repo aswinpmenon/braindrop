@@ -198,44 +198,45 @@ class LLMService {
             """
         }
 
-        // ── Probe protocol ─────────────────────────────────────────────────
+        // ── Probe protocol (only injected when the AgentRunner enables it) ───
         let probeSection = allowProbe ? """
 
-        AGENTIC PROBING:
-        If you need information before you can generate the final command (e.g. you must find the
-        largest file, check a page count, or list what files exist), output exactly:
-        PROBE: <shell command to gather that info>
-        You will be given the output and can then produce the final command.
-        Use PROBE only when the task genuinely requires it. Never probe for simple tasks.
-        Examples of when to PROBE:
-          - "zip the largest file here"  → PROBE: find "DIR" -type f -exec du -h {} + | sort -rh | head -5
-          - "split page 3 of the PDF"    → (page count already known from context, no probe needed)
-          - "find all duplicates"        → PROBE: find "DIR" -type f -exec md5 {} + | sort | awk 'seen[$1]++'
+        AGENTIC MODE — you may need one discovery step first:
+        If you must know a specific filename or size at runtime before acting, output:
+        PROBE: <shell command>
+        You will receive the output and then produce the final command.
+        Only use PROBE when the exact target file is unknown (e.g. "largest file", "oldest file").
+        Never use PROBE for counting, summarising, converting, or any task where the file path is already known.
         """ : ""
 
         return """
-        You are a macOS shell command expert. Convert the user's request into a single executable shell command.
+        You are a macOS terminal expert. Output ONE shell command that fulfils the user's request.
 
         CONTEXT:
         \(context)
-        AVAILABLE TOOLS:
-        File ops   : cp, mv, rm, mkdir, ln, rsync, find, ls, du, stat
-        Text       : cat, grep, sed, awk, sort, uniq, wc, cut, tr, diff, head, tail
-        Archives   : zip, unzip, tar, gzip, bzip2, 7z (if installed)
-        PDF        : pdfseparate, pdfunite, pdfinfo (brew install poppler)
-                     gs -sDEVICE=pdfwrite (brew install ghostscript)
-        Images     : sips (built-in resize/convert/info), exiftool, convert (ImageMagick)
-        Video/Audio: ffmpeg, ffprobe (brew install ffmpeg)
-        Metadata   : mdls, file, exiftool, xattr
-        Documents  : textutil (built-in .doc/.rtf/.html), pandoc (brew install pandoc)
-        Scripting  : python3 -c "..." for complex logic not covered by shell tools
+        TOOL REFERENCE (use the right tool for the task):
+        PDF text    → pdftotext "file.pdf" - | wc -w          (word count)
+                    → pdftotext "file.pdf" "out.txt"           (extract text)
+                    → pdfseparate -f 1 -l 3 "in.pdf" "pg%d.pdf" (split pages, needs: brew install poppler)
+                    → pdfunite p1.pdf p2.pdf "out.pdf"         (merge PDFs)
+                    → gs -sDEVICE=pdfwrite -dPDFSETTINGS=/ebook -o "out.pdf" "in.pdf" (compress)
+        PDF info    → pdfinfo "file.pdf"  |  mdls -name kMDItemNumberOfPages "file.pdf"
+        Images      → sips -Z 1024 "img.jpg"                   (resize, built-in)
+                    → sips -s format jpeg "img.png" --out "img.jpg" (convert, built-in)
+                    → sips -g pixelWidth -g pixelHeight "img.jpg"   (dimensions)
+        Video       → ffmpeg -i "in.mov" "out.mp4"             (convert)
+                    → ffmpeg -i "in.mp4" -vn "out.mp3"         (extract audio)
+                    → ffprobe -v quiet -show_format "file.mp4"  (info)
+        Archives    → zip "out.zip" "file"  |  unzip "a.zip" -d "dir/"
+        Text/count  → wc -w "file"  |  wc -l "file"  |  wc -c "file"
+        Metadata    → mdls "file"  |  exiftool "file"  |  file "file"
+        Docs        → textutil -convert txt "file.docx"        (built-in)
         \(fileRules)
-        OUTPUT RULES:
-        - Output ONLY a shell command (or PROBE: command). No explanation, no markdown.
-        - Wrap every path in double quotes.
-        - Prefer built-in macOS tools (sips, textutil, mdls) over optional ones when they suffice.
-        - Prefer new output files over overwriting originals unless asked.
-        - Output a single line.
+        STRICT RULES:
+        - Output ONLY the shell command. No prose, no markdown, no code fences.
+        - Quote every path with double quotes.
+        - Single line only.
+        - Never use grep to read PDF content — use pdftotext first.
         \(probeSection)
         """
     }
@@ -261,8 +262,9 @@ class LLMService {
         if cmd.hasPrefix("`") && cmd.hasSuffix("`") && cmd.count > 2 {
             cmd = String(cmd.dropFirst().dropLast())
         }
-        for prefix in ["Command:", "Shell command:", "$ ", "% ", "bash\n", "sh\n", "zsh\n"] {
-            if cmd.lowercased().hasPrefix(prefix.lowercased()) {
+        // Safety net: strip PROBE: if the model leaks it into a forced-direct-answer turn
+        for prefix in ["probe:", "command:", "shell command:", "$ ", "% ", "bash\n", "sh\n", "zsh\n"] {
+            if cmd.lowercased().hasPrefix(prefix) {
                 cmd = String(cmd.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
