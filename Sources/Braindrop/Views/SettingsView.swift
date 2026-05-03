@@ -143,7 +143,7 @@ struct AutoRunCheck: View {
 
 struct AIModelsTab: View {
     @ObservedObject private var s = AppSettings.shared
-    @State private var models: [OllamaModel] = []
+    @State private var models: [LLMModel] = []
     @State private var loading = false
     @State private var status: ConnStatus = .unknown
 
@@ -177,13 +177,13 @@ struct AIModelsTab: View {
                     if loading {
                         ProgressView().scaleEffect(0.6)
                     } else if models.isEmpty {
-                        TextField("llama3.2", text: $s.ollamaModel)
+                        TextField("mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit", text: $s.ollamaModel)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 180)
                             .font(.system(size: 12, design: .monospaced))
                     } else {
                         Picker("", selection: $s.ollamaModel) {
-                            ForEach(models) { m in Text(m.name).tag(m.name) }
+                            ForEach(models) { m in Text(m.displayName).tag(m.id) }
                         }
                         .labelsHidden()
                         .frame(width: 200)
@@ -195,9 +195,9 @@ struct AIModelsTab: View {
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Using llama-server (llama.cpp) — compatible with macOS 26.")
+                    Text("Powered by Apple MLX — optimised for Apple Silicon.")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
-                    Text("Start with: bash ~/Downloads/Braindrop/start-llama-server.sh")
+                    Text("Start with: bash ~/Downloads/Braindrop/start-mlx-server.sh")
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary)
                 }
             } header: { Text("Local LLM Server") }
@@ -210,7 +210,7 @@ struct AIModelsTab: View {
     private func testConn() {
         status = .unknown
         Task {
-            let ok = await OllamaService.shared.checkConnection()
+            let ok = await LLMService.shared.checkConnection()
             await MainActor.run {
                 status = ok ? .ok : .fail
                 if ok { loadModels() }
@@ -221,7 +221,7 @@ struct AIModelsTab: View {
     private func loadModels() {
         loading = true
         Task {
-            let ms = (try? await OllamaService.shared.listModels()) ?? []
+            let ms = (try? await LLMService.shared.listModels()) ?? []
             await MainActor.run { models = ms; loading = false }
         }
     }
@@ -240,7 +240,7 @@ struct AboutTab: View {
             Text("Natural language command bar for Finder")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
-            Text("Version 1.0  •  Powered by llama.cpp")
+            Text("Version 1.0  •  Powered by Apple MLX")
                 .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
             Divider().frame(width: 200)

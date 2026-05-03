@@ -32,7 +32,7 @@ class CommandBarViewModel: ObservableObject {
     var onClose:        (() -> Void)?
     var onOpenSettings: (() -> Void)?
 
-    private let ollama    = OllamaService.shared
+    private let llm       = LLMService.shared
     private let executor  = CommandExecutor.shared
     private let previewer = CommandPreview.shared
     private let history   = CommandHistory.shared
@@ -68,7 +68,7 @@ class CommandBarViewModel: ObservableObject {
         let fs = files; let wd = workingDir
         Task {
             do {
-                let cmd  = try await ollama.generateCommand(query: q, files: fs, workingDirectory: wd)
+                let cmd  = try await llm.generateCommand(query: q, files: fs, workingDirectory: wd)
                 let prev = previewer.analyze(command: cmd, context: fs)
                 command    = cmd
                 prediction = prev
@@ -294,14 +294,19 @@ struct CommandBarView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Divider()
-            ForEach(["llama3.2", "llama3.1", "mistral", "phi3", "gemma2"], id: \.self) { m in
-                Button(m) { AppSettings.shared.ollamaModel = m }
+            ForEach([
+                "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit",
+                "mlx-community/Qwen2.5-Coder-3B-Instruct-4bit",
+                "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+                "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+            ], id: \.self) { m in
+                Button(m.components(separatedBy: "/").last ?? m) { AppSettings.shared.ollamaModel = m }
             }
             Divider()
             Button("Settings…") { viewModel.onOpenSettings?() }
         } label: {
             HStack(spacing: 3) {
-                Text(AppSettings.shared.ollamaModel)
+                Text(AppSettings.shared.ollamaModel.components(separatedBy: "/").last ?? AppSettings.shared.ollamaModel)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

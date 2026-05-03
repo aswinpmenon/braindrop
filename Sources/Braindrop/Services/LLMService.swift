@@ -7,14 +7,14 @@ enum LLMError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .connectionFailed(let url): return "Cannot connect to LLM server at \(url). Is it running?"
-        case .invalidResponse: return "Received an invalid response from the LLM server."
+        case .connectionFailed(let url): return "Cannot connect to MLX server at \(url). Is it running?"
+        case .invalidResponse: return "Received an invalid response from the MLX server."
         case .serverError(let msg): return msg
         }
     }
 }
 
-// OpenAI-compatible request/response types (works with llama-server AND Ollama /v1 endpoint)
+// OpenAI-compatible request/response types
 struct ChatRequest: Codable {
     let model: String
     let messages: [ChatMessage]
@@ -36,22 +36,18 @@ struct ChatChoice: Codable {
     let message: ChatMessage
 }
 
-// For llama-server model info
-struct OllamaModel: Codable, Identifiable {
-    var id: String { name }
-    let name: String
-    let modified_at: String?
-    let size: Int64?
-    var displayName: String { name }
+// OpenAI /v1/models response
+struct LLMModel: Codable, Identifiable {
+    let id: String
+    var displayName: String { id.components(separatedBy: "/").last ?? id }
 }
 
-struct OllamaTagsResponse: Codable {
-    let models: [OllamaModel]
+struct OpenAIModelsResponse: Codable {
+    let data: [LLMModel]
 }
 
-// Keeping OllamaService name for compatibility
-class OllamaService {
-    static let shared = OllamaService()
+class LLMService {
+    static let shared = LLMService()
     private let settings = AppSettings.shared
     private init() {}
 
@@ -66,12 +62,12 @@ class OllamaService {
                 ChatMessage(role: "user", content: query)
             ],
             temperature: 0.1,
-            max_tokens: 256,
+            max_tokens: 128,
             stream: false
         )
 
         let url = baseURL.appendingPathComponent("v1/chat/completions")
-        var urlRequest = URLRequest(url: url, timeoutInterval: 90)
+        var urlRequest = URLRequest(url: url, timeoutInterval: 30)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder().encode(request)
@@ -100,35 +96,23 @@ class OllamaService {
         return cleanCommand(text)
     }
 
-    func listModels() async throws -> [OllamaModel] {
-        // llama-server returns just the loaded model name from /health
-        let healthURL = baseURL.appendingPathComponent("health")
-        if let (_, resp) = try? await URLSession.shared.data(from: healthURL),
-           (resp as? HTTPURLResponse)?.statusCode == 200 {
-            return [OllamaModel(name: settings.ollamaModel, modified_at: nil, size: nil)]
-        }
-        // Ollama: /api/tags
-        let url = baseURL.appendingPathComponent("api/tags")
-        var req = URLRequest(url: url, timeoutInterval: 8)
+    func listModels() async throws -> [LLMModel] {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/models"), timeoutInterval: 5)
         req.httpMethod = "GET"
         if let (data, response) = try? await URLSession.shared.data(for: req),
            (response as? HTTPURLResponse)?.statusCode == 200,
-           let decoded = try? JSONDecoder().decode(OllamaTagsResponse.self, from: data) {
-            return decoded.models
+           let decoded = try? JSONDecoder().decode(OpenAIModelsResponse.self, from: data) {
+            return decoded.data
         }
-        return [OllamaModel(name: settings.ollamaModel, modified_at: nil, size: nil)]
+        return [LLMModel(id: settings.ollamaModel)]
     }
 
     func checkConnection() async -> Bool {
-        // llama-server: GET /health → 200 {"status":"ok"}
-        // Ollama:       GET /api/tags → 200
-        for path in ["health", "api/tags"] {
-            var req = URLRequest(url: baseURL.appendingPathComponent(path), timeoutInterval: 5)
-            req.httpMethod = "GET"
-            if let (_, resp) = try? await URLSession.shared.data(for: req),
-               (resp as? HTTPURLResponse)?.statusCode == 200 {
-                return true
-            }
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/models"), timeoutInterval: 5)
+        req.httpMethod = "GET"
+        if let (_, resp) = try? await URLSession.shared.data(for: req),
+           (resp as? HTTPURLResponse)?.statusCode == 200 {
+            return true
         }
         return false
     }
@@ -137,12 +121,10 @@ class OllamaService {
         var context = ""
 
         if !files.isEmpty {
-            // Files are selected — use them as the primary target
             if let dir = cwd { context += "Working directory: \(dir)\n" }
             context += "Selected files:\n"
             files.forEach { context += "  - \($0.path)\n" }
         } else if let dir = cwd {
-            // No files selected — the open folder is the context
             context += "Current folder: \(dir)\n"
             context += "No files are selected. Operate on the folder or its contents.\n"
         }
@@ -172,12 +154,17 @@ class OllamaService {
 
     private func cleanCommand(_ raw: String) -> String {
         var cmd = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip Qwen/chat-template special tokens
+        for token in ["<|im_end|>", "<|im_start|>", "<|endoftext|>", "</s>"] {
+            cmd = cmd.replacingOccurrences(of: token, with: "")
+        }
+        cmd = cmd.trimmingCharacters(in: .whitespacesAndNewlines)
         // Strip triple-backtick code fences
         if cmd.hasPrefix("```") {
             let lines = cmd.components(separatedBy: "\n")
             cmd = lines.dropFirst().prefix(while: { !$0.hasPrefix("```") }).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        // Strip single-backtick wrapping: `command`
+        // Strip single-backtick wrapping
         if cmd.hasPrefix("`") && cmd.hasSuffix("`") && cmd.count > 2 {
             cmd = String(cmd.dropFirst().dropLast())
         }
@@ -187,7 +174,6 @@ class OllamaService {
                 cmd = String(cmd.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-        // Take only the first non-empty line if multiple lines returned
         let firstLine = cmd.components(separatedBy: "\n").first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? cmd
         return firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
     }

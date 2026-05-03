@@ -73,7 +73,7 @@ class AppSettings: ObservableObject {
 
     private init() {
         ollamaBaseURL  = UserDefaults.standard.string(forKey: "ollamaBaseURL") ?? "http://127.0.0.1:8080"
-        ollamaModel    = UserDefaults.standard.string(forKey: "ollamaModel")   ?? "llama3.2"
+        ollamaModel    = UserDefaults.standard.string(forKey: "ollamaModel")   ?? "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit"
 
         let kc = UserDefaults.standard.integer(forKey: "hotkeyKeyCode")
         hotkeyKeyCode  = kc == 0 ? UInt32(kVK_Space) : UInt32(kc)
