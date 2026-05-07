@@ -1,9 +1,8 @@
 import Foundation
-import AppKit
+import Combine
 
 /// Manages the lifecycle of the `mlx_lm.server` process as an in-process child.
 /// The server is started on app launch and terminated when the app quits.
-@MainActor
 class MLXServerManager: ObservableObject {
     static let shared = MLXServerManager()
 
@@ -14,17 +13,18 @@ class MLXServerManager: ObservableObject {
         case failed(String)
     }
 
+    /// Always mutated on the main thread so SwiftUI / Combine works correctly.
     @Published private(set) var state: ServerState = .idle
 
     private var process: Process?
     private var startupTask: Task<Void, Never>?
 
     // MLX server config
-    private let model   = "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit"
-    private let port    = 8080
-    private let host    = "127.0.0.1"
+    private let model = "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit"
+    private let port  = 8080
+    private let host  = "127.0.0.1"
 
-    // Candidate Python paths that may have mlx_lm installed
+    // Python candidates checked in order — first one with mlx_lm wins
     private let pythonCandidates = [
         "/opt/homebrew/bin/python3.11",
         "/opt/homebrew/bin/python3.12",
@@ -38,39 +38,30 @@ class MLXServerManager: ObservableObject {
 
     // MARK: - Public API
 
-    /// Start the server in the background. Safe to call multiple times.
+    /// Start the server asynchronously. Safe to call multiple times.
     func start() {
-        guard case .idle = state else { return }
-        state = .starting
+        setState(.starting)
         startupTask = Task.detached(priority: .utility) { [weak self] in
             await self?.doStart()
         }
     }
 
-    /// Terminate the server. Called on app quit.
+    /// Terminate the server. Call from applicationWillTerminate.
     func stop() {
         startupTask?.cancel()
-        if let p = process, p.isRunning {
-            p.terminate()
-            // Give it a moment to clean up
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                if p.isRunning { p.interrupt() }
-            }
-        }
+        process?.terminate()
         process = nil
-        state = .idle
+        setState(.idle)
     }
 
     // MARK: - Private
 
+    /// Runs entirely off the main thread — no main-thread blocking.
     private func doStart() async {
-        // Kill any stale server from a previous session
-        killStale()
+        killStale()   // blocking — fine off main thread
 
         guard let python = findPython() else {
-            await MainActor.run {
-                self.state = .failed("mlx_lm not found. Run: pip3 install mlx-lm")
-            }
+            setState(.failed("mlx_lm not found — run: pip3.11 install mlx-lm"))
             return
         }
 
@@ -83,59 +74,49 @@ class MLXServerManager: ObservableObject {
             "--host", host,
         ]
 
-        // Merge Homebrew paths so mlx_lm can find its dependencies
         var env = ProcessInfo.processInfo.environment
-        let brewBin = "/opt/homebrew/bin:/usr/local/bin"
+        let brewBin = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin"
         env["PATH"] = "\(brewBin):\(env["PATH"] ?? "/usr/bin:/bin")"
         p.environment = env
 
-        // Discard stdout/stderr so no Terminal window appears
+        // Discard output — no Terminal window, no console spam
         p.standardOutput = Pipe()
         p.standardError  = Pipe()
 
         p.terminationHandler = { [weak self] proc in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if case .running = self.state {
-                    self.state = .failed("MLX server exited (code \(proc.terminationStatus))")
-                }
-            }
+            self?.setState(.failed("MLX server exited (code \(proc.terminationStatus))"))
         }
 
         do {
             try p.run()
         } catch {
-            await MainActor.run {
-                self.state = .failed("Failed to launch: \(error.localizedDescription)")
-            }
+            setState(.failed("Launch failed: \(error.localizedDescription)"))
             return
         }
+        self.process = p
 
-        await MainActor.run { self.process = p }
-
-        // Poll until the server responds on the health endpoint
         let ready = await waitForServer()
-        await MainActor.run {
-            self.state = ready ? .running : .failed("Server did not start in time")
-        }
+        setState(ready ? .running : .failed("Server did not respond in time"))
     }
 
-    /// Poll /v1/models until the server is ready (up to 120 s).
+    /// Poll /v1/models with 2 s intervals until the server says 200 OK (up to 120 s).
     private func waitForServer() async -> Bool {
         let url = URL(string: "http://\(host):\(port)/v1/models")!
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest  = 3
+        cfg.timeoutIntervalForResource = 3
+        let session = URLSession(configuration: cfg)
         let deadline = Date().addingTimeInterval(120)
         while Date() < deadline {
             if Task.isCancelled { return false }
-            do {
-                let (_, resp) = try await URLSession.shared.data(from: url)
-                if (resp as? HTTPURLResponse)?.statusCode == 200 { return true }
-            } catch {}
-            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 s
+            if let (_, resp) = try? await session.data(from: url),
+               (resp as? HTTPURLResponse)?.statusCode == 200 { return true }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
         return false
     }
 
-    /// Kill any pre-existing mlx_lm.server process (e.g., leftover from a crash).
+    /// Kill any pre-existing mlx_lm.server — blocking, must run off main thread.
     private func killStale() {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
@@ -145,7 +126,7 @@ class MLXServerManager: ObservableObject {
         Thread.sleep(forTimeInterval: 0.5)
     }
 
-    /// Find the first Python binary that has mlx_lm installed.
+    /// Find the first Python that has mlx_lm installed — blocking, off main thread.
     private func findPython() -> String? {
         for candidate in pythonCandidates {
             guard FileManager.default.fileExists(atPath: candidate) else { continue }
@@ -157,5 +138,13 @@ class MLXServerManager: ObservableObject {
             if check.terminationStatus == 0 { return candidate }
         }
         return nil
+    }
+
+    // MARK: - Thread-safe state update
+
+    private func setState(_ newState: ServerState) {
+        DispatchQueue.main.async { [weak self] in
+            self?.state = newState
+        }
     }
 }

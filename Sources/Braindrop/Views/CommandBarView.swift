@@ -455,7 +455,7 @@ struct CommandBarView: View {
 
     private var barRow: some View {
         HStack(spacing: 0) {
-            // Left: dot + context label
+            // Left: dot + context label — also acts as drag handle
             HStack(spacing: 5) {
                 Circle().fill(dotColor).frame(width: 8, height: 8)
                 if !viewModel.files.isEmpty {
@@ -468,6 +468,8 @@ struct CommandBarView: View {
             }
             .frame(width: 90, alignment: .leading)
             .padding(.leading, 14)
+            // Drag handle overlay on the left zone
+            .background(WindowDragHandle())
 
             // Center: text field / live streaming preview
             ZStack {
@@ -560,7 +562,9 @@ struct CommandBarView: View {
 
     private var modelButton: some View {
         Menu {
-            Text("Model").font(.system(size: 11)).foregroundStyle(.secondary)
+            // Show short name of active model
+            let shortName = AppSettings.shared.ollamaModel.components(separatedBy: "/").last ?? AppSettings.shared.ollamaModel
+            Text(shortName).font(.system(size: 11)).foregroundStyle(.secondary)
             Divider()
             ForEach([
                 "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit",
@@ -574,13 +578,14 @@ struct CommandBarView: View {
             Divider()
             Button("Settings…") { viewModel.onOpenSettings?() }
         } label: {
-            HStack(spacing: 3) {
-                Text(AppSettings.shared.ollamaModel.components(separatedBy: "/").last ?? AppSettings.shared.ollamaModel)
-                    .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium)).foregroundStyle(.tertiary)
-            }
+            // Show just an icon — tooltip reveals the full model name
+            Image(systemName: "sparkles")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
         }
-        .menuStyle(.borderlessButton).fixedSize()
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(AppSettings.shared.ollamaModel.components(separatedBy: "/").last ?? AppSettings.shared.ollamaModel)
     }
 
     // MARK: Expanded section
@@ -923,6 +928,25 @@ struct CommandBarView: View {
         case .moved:    return .blue
         case .read:     return Color(nsColor: .secondaryLabelColor)
         }
+    }
+}
+
+// MARK: - Window drag handle
+
+/// Transparent NSView that lets the user drag the panel by clicking anywhere
+/// in the bar row that isn't a text field or button.
+struct WindowDragHandle: NSViewRepresentable {
+    func makeNSView(context: Context) -> DragHandleView { DragHandleView() }
+    func updateNSView(_ nsView: DragHandleView, context: Context) {}
+
+    class DragHandleView: NSView {
+        override func mouseDown(with event: NSEvent) {
+            // Initiate window drag — works even on non-activating panels
+            window?.performDrag(with: event)
+        }
+        // Forward mouseUp/mouseDragged so AppKit drag bookkeeping completes
+        override func mouseUp(with event: NSEvent)      { super.mouseUp(with: event) }
+        override func mouseDragged(with event: NSEvent) { super.mouseDragged(with: event) }
     }
 }
 

@@ -35,8 +35,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mlxManager.start()
         // Reflect server state in the menu-bar icon
         mlxCancellable = mlxManager.$state
-            .receive(on: RunLoop.main)
-            .sink { [weak self] state in self?.updateStatusIcon(for: state) }
+            .sink { [weak self] state in
+                DispatchQueue.main.async { self?.updateStatusIcon(for: state) }
+            }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -80,9 +81,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func statusBarClicked() {
         let menu = NSMenu()
 
-        // MLX server status
+        // MLX server status (read synchronously — already on main thread via @objc)
+        let srvState = mlxManager.state
         let serverStatusTitle: String
-        switch mlxManager.state {
+        switch srvState {
         case .idle:     serverStatusTitle = "MLX Server: idle"
         case .starting: serverStatusTitle = "MLX Server: starting…"
         case .running:  serverStatusTitle = "MLX Server: running ✓"
