@@ -79,9 +79,13 @@ class MLXServerManager: ObservableObject {
         env["PATH"] = "\(brewBin):\(env["PATH"] ?? "/usr/bin:/bin")"
         p.environment = env
 
-        // Discard output — no Terminal window, no console spam
-        p.standardOutput = Pipe()
-        p.standardError  = Pipe()
+        // Fully detach from any controlling terminal:
+        // closing stdin prevents the process from ever waiting on terminal input,
+        // and redirecting stdout/stderr to /dev/null stops any output reaching
+        // a parent terminal session.
+        p.standardInput  = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError  = FileHandle.nullDevice
 
         p.terminationHandler = { [weak self] proc in
             self?.setState(.failed("MLX server exited (code \(proc.terminationStatus))"))
