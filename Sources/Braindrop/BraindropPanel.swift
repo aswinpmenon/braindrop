@@ -16,14 +16,18 @@ class BraindropPanel: NSPanel {
         )
         isFloatingPanel             = true
         level                       = .floating
-        isMovableByWindowBackground = true   // drag from any non-interactive area
+        isMovableByWindowBackground = true
         isMovable                   = true
         hidesOnDeactivate           = false
         isReleasedWhenClosed        = false
         isOpaque                    = false
-        backgroundColor             = .clear
+        backgroundColor             = .clear   // fully transparent — glass effect provides the fill
         hasShadow                   = true
         collectionBehavior          = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Tell AppKit this window wants the new liquid glass compositing path
+        if #available(macOS 26, *) {
+            appearance = nil   // inherit system appearance so glass tints match wallpaper
+        }
     }
 
     // MARK: - Position

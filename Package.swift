@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Braindrop",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v14)],   // actual target is macOS 26; glass APIs guarded with @available
     targets: [
         .executableTarget(
             name: "Braindrop",

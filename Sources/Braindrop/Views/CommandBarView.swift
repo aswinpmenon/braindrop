@@ -475,25 +475,71 @@ struct CommandBarView: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 9)
-                .fill(Color(nsColor: .windowBackgroundColor))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 9)
-                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.7), lineWidth: 0.5)
-                )
+        if #available(macOS 26, *) {
+            glassBody
+                .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true } }
+                .onKeyPress(.escape) { viewModel.onClose?(); return .handled }
+        } else {
+            legacyBody
+                .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true } }
+                .onKeyPress(.escape) { viewModel.onClose?(); return .handled }
+        }
+    }
 
+    // MARK: - Liquid Glass body (macOS 26+)
+
+    @available(macOS 26, *)
+    @ViewBuilder
+    private var glassBody: some View {
+        let isExpanded = viewModel.barState != .idle && viewModel.barState != .generating
+        GlassEffectContainer {
+            VStack(spacing: 0) {
+                barRow
+                    .frame(height: BraindropPanel.barRowHeight)
+                    .glassEffect(in: .rect(cornerRadius: isExpanded ? 0 : 14))
+                    .glassEffectID("bar", in: glassNamespace)
+
+                if isExpanded {
+                    Divider().opacity(0.3)
+                    expandedSection
+                        .glassEffect(.regular.tint(expandedTint), in: .rect(cornerRadius: 14))
+                        .glassEffectID("expanded", in: glassNamespace)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
+    }
+
+    // MARK: - Legacy body (macOS 15 and below)
+
+    @ViewBuilder
+    private var legacyBody: some View {
+        let isExpanded = viewModel.barState != .idle && viewModel.barState != .generating
+        ZStack {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.92))
+                .overlay(RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 0.5))
             VStack(spacing: 0) {
                 barRow.frame(height: BraindropPanel.barRowHeight)
-                let isExpanded = viewModel.barState != .idle && viewModel.barState != .generating
                 if isExpanded { Divider(); expandedSection }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 9))
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @Namespace private var glassNamespace
+
+    @available(macOS 26, *)
+    private var expandedTint: Color {
+        switch viewModel.barState {
+        case .error:                      return .red.opacity(0.06)
+        case .result, .contentResult:     return .green.opacity(0.04)
+        case .preview:                    return .blue.opacity(0.04)
+        case .installing:                 return .orange.opacity(0.05)
+        default:                          return .clear
         }
-        .onKeyPress(.escape) { viewModel.onClose?(); return .handled }
     }
 
     // MARK: Bar row
@@ -517,81 +563,69 @@ struct CommandBarView: View {
             .background(WindowDragHandle())
 
             // Center: text field / live streaming / voice transcript
-            ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(
-                                voice.isListening
-                                    ? Color.red.opacity(0.6)
-                                    : Color(nsColor: .separatorColor).opacity(0.5),
-                                lineWidth: voice.isListening ? 1.0 : 0.5
-                            )
+            HStack(spacing: 6) {
+                if isSpinning { ProgressView().scaleEffect(0.55).progressViewStyle(.circular) }
+                if voice.isListening {
+                    VoiceWaveformView(level: voice.volumeLevel)
+                    Text(viewModel.query.isEmpty ? "Listening…" : viewModel.query)
+                        .font(.system(size: 13))
+                        .foregroundStyle(viewModel.query.isEmpty ? .tertiary : .primary)
+                        .lineLimit(1).truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if viewModel.barState == .generating && !viewModel.streamingCommand.isEmpty {
+                    Text(viewModel.streamingCommand)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    TextField(
+                        viewModel.voiceModeEnabled ? "Say something or type…" : "Ask anything about your files…",
+                        text: $viewModel.query
                     )
-                HStack(spacing: 6) {
-                    if isSpinning { ProgressView().scaleEffect(0.55).progressViewStyle(.circular) }
-                    if voice.isListening {
-                        // Waveform bars
-                        VoiceWaveformView(level: voice.volumeLevel)
-                        // Live transcript or placeholder
-                        Text(viewModel.query.isEmpty ? "Listening…" : viewModel.query)
-                            .font(.system(size: 13))
-                            .foregroundStyle(viewModel.query.isEmpty ? .tertiary : .primary)
-                            .lineLimit(1).truncationMode(.tail)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else if viewModel.barState == .generating && !viewModel.streamingCommand.isEmpty {
-                        Text(viewModel.streamingCommand)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        TextField(
-                            viewModel.voiceModeEnabled ? "Say something or type…" : "Ask anything about your files…",
-                            text: $viewModel.query
-                        )
-                        .textFieldStyle(.plain).font(.system(size: 13))
-                        .focused($focused)
-                        .onSubmit { viewModel.generate() }
-                        .onKeyPress(.upArrow)   { viewModel.historyUp();   return .handled }
-                        .onKeyPress(.downArrow) { viewModel.historyDown(); return .handled }
-                        .disabled(isInputDisabled)
-                    }
+                    .textFieldStyle(.plain).font(.system(size: 13))
+                    .focused($focused)
+                    .onSubmit { viewModel.generate() }
+                    .onKeyPress(.upArrow)   { viewModel.historyUp();   return .handled }
+                    .onKeyPress(.downArrow) { viewModel.historyDown(); return .handled }
+                    .disabled(isInputDisabled)
                 }
-                .padding(.horizontal, 8)
             }
-            .frame(height: 26).padding(.horizontal, 10)
+            .padding(.horizontal, 14)
+            .frame(height: 26)
+            .glassInputField(isListening: voice.isListening)
+            .padding(.horizontal, 8)
 
             // Right: mic + model + history + settings
-            HStack(spacing: 10) {
+            HStack(spacing: 6) {
                 // Mic / voice-mode toggle
                 Button { viewModel.toggleVoiceMode() } label: {
-                    ZStack {
-                        if viewModel.voiceModeEnabled {
-                            Circle()
-                                .fill(voice.isListening ? Color.red : Color.red.opacity(0.15))
-                                .frame(width: 22, height: 22)
-                        }
-                        Image(systemName: voice.isListening ? "waveform" : "mic")
-                            .font(.system(size: 13, weight: voice.isListening ? .semibold : .regular))
-                            .foregroundStyle(viewModel.voiceModeEnabled ? .white : .secondary)
-                            .symbolEffect(.variableColor.iterative, isActive: voice.isListening)
-                    }
+                    Image(systemName: voice.isListening ? "waveform" : "mic")
+                        .font(.system(size: 13, weight: voice.isListening ? .semibold : .regular))
+                        .symbolEffect(.variableColor.iterative, isActive: voice.isListening)
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
-                .help(viewModel.voiceModeEnabled ? "Voice mode on — click to disable" : "Voice mode — click to enable")
+                .glassCircleButton(tint: voice.isListening ? .red.opacity(0.35) : nil)
+                .help(viewModel.voiceModeEnabled ? "Voice on — tap to disable" : "Voice mode")
 
                 modelButton
+
                 Button { CommandHistory.shared.entries.isEmpty ? () : viewModel.historyUp() } label: {
-                    Image(systemName: "clock").font(.system(size: 13)).foregroundStyle(.secondary)
+                    Image(systemName: "clock")
+                        .font(.system(size: 13))
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain).help("Command history (↑)")
+                .glassCircleButton()
+                .help("Command history (↑)")
+
                 Button { viewModel.onOpenSettings?() } label: {
-                    Image(systemName: "gearshape").font(.system(size: 13)).foregroundStyle(.secondary)
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13))
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain).help("Settings")
+                .glassCircleButton()
+                .help("Settings")
             }
-            .padding(.trailing, 12)
+            .padding(.trailing, 10)
         }
     }
 
@@ -657,10 +691,10 @@ struct CommandBarView: View {
             Divider()
             Button("Settings…") { viewModel.onOpenSettings?() }
         } label: {
-            // Show just an icon — tooltip reveals the full model name
             Image(systemName: "sparkles")
                 .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .glassCircleButton()
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
@@ -768,12 +802,12 @@ struct CommandBarView: View {
             }
 
             Divider()
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Spacer()
                 Button("Cancel") { viewModel.rejectPlan() }
-                    .buttonStyle(BarSecondaryButtonStyle()).keyboardShortcut(.cancelAction)
+                    .glassSecondaryButton().keyboardShortcut(.cancelAction)
                 Button("Execute Plan") { Task { await viewModel.executePlan() } }
-                    .buttonStyle(BarPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
+                    .glassPrimaryButton().keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 14).frame(height: 52)
         }
@@ -885,15 +919,16 @@ struct CommandBarView: View {
     }
 
     private var actionButtons: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Spacer()
             Button("Cancel") { viewModel.reject() }
-                .buttonStyle(BarSecondaryButtonStyle()).keyboardShortcut(.cancelAction)
+                .keyboardShortcut(.cancelAction)
+                .glassSecondaryButton()
             Button(viewModel.prediction.isDestructive ? "Run anyway" : "Run") {
                 Task { await viewModel.run() }
             }
-            .buttonStyle(BarPrimaryButtonStyle(destructive: viewModel.prediction.isDestructive))
             .keyboardShortcut(.defaultAction)
+            .glassPrimaryButton()
         }
         .padding(.horizontal, 14)
     }
@@ -908,7 +943,7 @@ struct CommandBarView: View {
                 .font(.system(size: 11, design: .monospaced)).foregroundStyle(.tertiary)
                 .lineLimit(1).truncationMode(.middle)
             Spacer()
-            Button("Cancel") { viewModel.cancelExecution() }.buttonStyle(BarSecondaryButtonStyle())
+            Button("Cancel") { viewModel.cancelExecution() }.glassSecondaryButton()
         }
         .padding(.horizontal, 14).frame(height: 44)
     }
@@ -929,9 +964,9 @@ struct CommandBarView: View {
                     } label: {
                         Label("Reveal", systemImage: "folder").font(.system(size: 12))
                     }
-                    .buttonStyle(BarSecondaryButtonStyle())
+                    .glassSecondaryButton()
                 }
-                Button("Dismiss") { viewModel.reset() }.buttonStyle(BarSecondaryButtonStyle())
+                Button("Dismiss") { viewModel.reset() }.glassSecondaryButton()
             }
             .padding(.horizontal, 14).frame(height: 36)
 
@@ -957,7 +992,7 @@ struct CommandBarView: View {
                 Image(systemName: "sparkles").foregroundStyle(.purple)
                 Text("AI Answer").font(.system(size: 12, weight: .medium))
                 Spacer()
-                Button("Dismiss") { viewModel.reset() }.buttonStyle(BarSecondaryButtonStyle())
+                Button("Dismiss") { viewModel.reset() }.glassSecondaryButton()
             }
             .padding(.horizontal, 14).frame(height: 36)
 
@@ -982,7 +1017,7 @@ struct CommandBarView: View {
                 .font(.system(size: 12)).fixedSize(horizontal: false, vertical: true).lineLimit(4)
                 .textSelection(.enabled)
             Spacer()
-            Button("Dismiss") { viewModel.reset() }.buttonStyle(BarSecondaryButtonStyle())
+            Button("Dismiss") { viewModel.reset() }.glassSecondaryButton()
         }
         .padding(.horizontal, 14).padding(.vertical, 14)
     }
@@ -1063,21 +1098,72 @@ struct WindowDragHandle: NSViewRepresentable {
     }
 }
 
-// MARK: - Button styles
+// MARK: - Glass view modifiers (availability-gated)
 
-struct BarPrimaryButtonStyle: ButtonStyle {
-    var destructive = false
+extension View {
+    /// Capsule input field — glass on macOS 26+, subtle fill below.
+    func glassInputField(isListening: Bool) -> some View {
+        if #available(macOS 26, *) {
+            return AnyView(self.glassEffect(
+                isListening ? .regular.tint(.red.opacity(0.15)).interactive() : .regular.interactive(),
+                in: .capsule
+            ))
+        } else {
+            return AnyView(self
+                .background(Capsule().fill(Color(nsColor: .controlBackgroundColor))
+                    .overlay(Capsule().strokeBorder(
+                        isListening ? Color.red.opacity(0.5) : Color(nsColor: .separatorColor).opacity(0.5),
+                        lineWidth: 0.5)))
+            )
+        }
+    }
+
+    /// Circle toolbar button — glass on macOS 26+, plain below.
+    func glassCircleButton(tint: Color? = nil) -> some View {
+        if #available(macOS 26, *) {
+            if let tint {
+                return AnyView(self.glassEffect(.regular.tint(tint).interactive(), in: .circle))
+            } else {
+                return AnyView(self.glassEffect(.regular.interactive(), in: .circle))
+            }
+        } else {
+            return AnyView(self.buttonStyle(.plain))
+        }
+    }
+
+    /// Primary action button — glassProminent on macOS 26+, accent fill below.
+    func glassPrimaryButton() -> some View {
+        if #available(macOS 26, *) {
+            return AnyView(self.buttonStyle(.glassProminent))
+        } else {
+            return AnyView(self.buttonStyle(LegacyPrimaryStyle()))
+        }
+    }
+
+    /// Secondary action button — glass on macOS 26+, control fill below.
+    func glassSecondaryButton() -> some View {
+        if #available(macOS 26, *) {
+            return AnyView(self.buttonStyle(.glass))
+        } else {
+            return AnyView(self.buttonStyle(LegacySecondaryStyle()))
+        }
+    }
+}
+
+// MARK: - Legacy button styles (macOS 15 and below)
+
+private struct LegacyPrimaryStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .medium))
             .padding(.horizontal, 14).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 5).fill(destructive ? Color.red : Color.accentColor))
+            .background(RoundedRectangle(cornerRadius: 5).fill(Color.accentColor))
             .foregroundStyle(.white)
             .opacity(configuration.isPressed ? 0.85 : 1)
     }
 }
 
-struct BarSecondaryButtonStyle: ButtonStyle {
+private struct LegacySecondaryStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12))

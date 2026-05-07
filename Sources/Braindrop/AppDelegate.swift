@@ -120,6 +120,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let hostingView = NSHostingView(rootView: CommandBarView(viewModel: vm))
         hostingView.translatesAutoresizingMaskIntoConstraints = false
+        // Let glass compositing show through — hosting view must be transparent
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = .clear
 
         let p = BraindropPanel()
         panel = p
