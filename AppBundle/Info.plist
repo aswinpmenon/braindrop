@@ -24,6 +24,10 @@
     <string>Braindrop needs to access Finder to read your selected files and folder context.</string>
     <key>NSAppleScriptEnabled</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Braindrop uses the microphone to let you give voice commands instead of typing.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Braindrop converts your voice to text so it can execute your spoken commands.</string>
     <key>NSHumanReadableCopyright</key>
     <string>© 2025 Braindrop</string>
 </dict>

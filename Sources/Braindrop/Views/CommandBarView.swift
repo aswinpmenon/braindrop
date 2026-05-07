@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 // MARK: - State
 
@@ -53,6 +54,11 @@ class CommandBarViewModel: ObservableObject {
     @Published var idealHeight: CGFloat      = BraindropPanel.barRowHeight
     @Published var detectedOutputFile: String? = nil
 
+    // MARK: Voice
+    @Published var voiceModeEnabled = false
+    let voice = VoiceService.shared
+    private var voiceCancellables = Set<AnyCancellable>()
+
     var onClose:        (() -> Void)?
     var onOpenSettings: (() -> Void)?
 
@@ -62,6 +68,41 @@ class CommandBarViewModel: ObservableObject {
     private let history   = CommandHistory.shared
     private let settings  = AppSettings.shared
     private let llm       = LLMService.shared
+
+    init() {
+        // Mirror live transcript into the query field
+        voice.$transcript
+            .receive(on: RunLoop.main)
+            .sink { [weak self] text in
+                guard let self, self.voice.isListening else { return }
+                self.query = text
+            }
+            .store(in: &voiceCancellables)
+
+        // Auto-submit when silence is detected
+        voice.onFinalTranscript = { [weak self] text in
+            guard let self else { return }
+            self.query = text
+            if !text.isEmpty { self.generate() }
+        }
+    }
+
+    // MARK: - Voice toggle
+
+    func toggleVoiceMode() {
+        voiceModeEnabled.toggle()
+        if voiceModeEnabled {
+            // Request permissions first, then start if panel is already showing
+            Task {
+                let ok = await voice.requestPermissions()
+                if ok, self.voiceModeEnabled { self.voice.startListening() }
+            }
+        } else {
+            voice.stopListening(submit: false)
+        }
+    }
+
+    // MARK: - Lifecycle
 
     func onAppear(files: [FileContext], workingDir: String?) {
         query              = ""
@@ -77,9 +118,12 @@ class CommandBarViewModel: ObservableObject {
         self.files         = files
         self.workingDir    = workingDir
         updateHeight()
+        // Auto-start listening if voice mode is on
+        if voiceModeEnabled { voice.startListening() }
     }
 
     func reset() {
+        voice.stopListening(submit: false)
         barState           = .idle
         query              = ""
         command            = ""
@@ -427,6 +471,7 @@ class CommandBarViewModel: ObservableObject {
 
 struct CommandBarView: View {
     @ObservedObject var viewModel: CommandBarViewModel
+    @ObservedObject private var voice = VoiceService.shared
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -471,37 +516,71 @@ struct CommandBarView: View {
             // Drag handle overlay on the left zone
             .background(WindowDragHandle())
 
-            // Center: text field / live streaming preview
+            // Center: text field / live streaming / voice transcript
             ZStack {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color(nsColor: .controlBackgroundColor))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 0.5)
+                            .strokeBorder(
+                                voice.isListening
+                                    ? Color.red.opacity(0.6)
+                                    : Color(nsColor: .separatorColor).opacity(0.5),
+                                lineWidth: voice.isListening ? 1.0 : 0.5
+                            )
                     )
                 HStack(spacing: 6) {
                     if isSpinning { ProgressView().scaleEffect(0.55).progressViewStyle(.circular) }
-                    if viewModel.barState == .generating && !viewModel.streamingCommand.isEmpty {
+                    if voice.isListening {
+                        // Waveform bars
+                        VoiceWaveformView(level: voice.volumeLevel)
+                        // Live transcript or placeholder
+                        Text(viewModel.query.isEmpty ? "Listening…" : viewModel.query)
+                            .font(.system(size: 13))
+                            .foregroundStyle(viewModel.query.isEmpty ? .tertiary : .primary)
+                            .lineLimit(1).truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else if viewModel.barState == .generating && !viewModel.streamingCommand.isEmpty {
                         Text(viewModel.streamingCommand)
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        TextField("Ask anything about your files…", text: $viewModel.query)
-                            .textFieldStyle(.plain).font(.system(size: 13))
-                            .focused($focused)
-                            .onSubmit { viewModel.generate() }
-                            .onKeyPress(.upArrow)   { viewModel.historyUp();   return .handled }
-                            .onKeyPress(.downArrow) { viewModel.historyDown(); return .handled }
-                            .disabled(isInputDisabled)
+                        TextField(
+                            viewModel.voiceModeEnabled ? "Say something or type…" : "Ask anything about your files…",
+                            text: $viewModel.query
+                        )
+                        .textFieldStyle(.plain).font(.system(size: 13))
+                        .focused($focused)
+                        .onSubmit { viewModel.generate() }
+                        .onKeyPress(.upArrow)   { viewModel.historyUp();   return .handled }
+                        .onKeyPress(.downArrow) { viewModel.historyDown(); return .handled }
+                        .disabled(isInputDisabled)
                     }
                 }
                 .padding(.horizontal, 8)
             }
             .frame(height: 26).padding(.horizontal, 10)
 
-            // Right: model + history + settings
+            // Right: mic + model + history + settings
             HStack(spacing: 10) {
+                // Mic / voice-mode toggle
+                Button { viewModel.toggleVoiceMode() } label: {
+                    ZStack {
+                        if viewModel.voiceModeEnabled {
+                            Circle()
+                                .fill(voice.isListening ? Color.red : Color.red.opacity(0.15))
+                                .frame(width: 22, height: 22)
+                        }
+                        Image(systemName: voice.isListening ? "waveform" : "mic")
+                            .font(.system(size: 13, weight: voice.isListening ? .semibold : .regular))
+                            .foregroundStyle(viewModel.voiceModeEnabled ? .white : .secondary)
+                            .symbolEffect(.variableColor.iterative, isActive: voice.isListening)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(viewModel.voiceModeEnabled ? "Voice mode on — click to disable" : "Voice mode — click to enable")
+
                 modelButton
                 Button { CommandHistory.shared.entries.isEmpty ? () : viewModel.historyUp() } label: {
                     Image(systemName: "clock").font(.system(size: 13)).foregroundStyle(.secondary)
@@ -928,6 +1007,40 @@ struct CommandBarView: View {
         case .moved:    return .blue
         case .read:     return Color(nsColor: .secondaryLabelColor)
         }
+    }
+}
+
+// MARK: - Voice waveform
+
+/// Animated bars that pulse with the microphone volume level.
+struct VoiceWaveformView: View {
+    var level: Float   // 0..1
+
+    // Tick drives animation even when level is constant
+    @State private var tick: Double = 0
+    private let barCount = 5
+    private let maxHeight: CGFloat = 14
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<barCount, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.red.opacity(0.85))
+                    .frame(width: 3, height: barHeight(for: i))
+                    .animation(.spring(duration: 0.1), value: tick)
+            }
+        }
+        .frame(width: 22, height: maxHeight)
+        .onReceive(Timer.publish(every: 0.08, on: .main, in: .common).autoconnect()) { _ in
+            tick = Date().timeIntervalSinceReferenceDate
+        }
+    }
+
+    private func barHeight(for index: Int) -> CGFloat {
+        let phase = Double(index) / Double(barCount) * .pi
+        let wave  = abs(sin(tick * 8.0 + phase))
+        let base  = max(0.2, Double(level) * wave + 0.12)
+        return min(CGFloat(base) * maxHeight, maxHeight)
     }
 }
 
