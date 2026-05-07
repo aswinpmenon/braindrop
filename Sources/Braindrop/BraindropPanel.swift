@@ -28,37 +28,46 @@ class BraindropPanel: NSPanel {
 
     // MARK: - Position
 
-    /// Place panel.
-    /// • If a Finder window is visible: dock just below it, matching its width.
-    /// • Otherwise: bottom-centre of screen, just above the Dock.
+    /// Initial placement when the panel first appears.
     func reposition(finderFrame: NSRect?, contentHeight: CGFloat) {
-        guard let screen = NSScreen.main else { return }
-        let sv = screen.visibleFrame   // already excludes the Dock & menu bar
+        let target = targetFrame(finderFrame: finderFrame, contentHeight: contentHeight)
+        setFrame(target, display: false)
+    }
 
-        let w: CGFloat
-        let x: CGFloat
-        let y: CGFloat
-
-        if let f = finderFrame, f.width > 0 {
-            // Match Finder window width, clamp to our min/max
-            let rawW = max(BraindropPanel.minWidth, min(f.width, BraindropPanel.maxWidth))
-            w = rawW
-            x = max(sv.minX, min(f.minX, sv.maxX - rawW))
-            // Sit directly below the Finder window; clamp so it never hides below dock
-            y = max(sv.minY, f.minY - contentHeight)
-        } else {
-            // No Finder window: centre horizontally, sit just above the Dock
-            w = BraindropPanel.defaultWidth
-            x = sv.midX - w / 2
-            y = sv.minY   // visibleFrame.minY == top of Dock
+    /// Called at 50 ms intervals to magnetically follow the Finder window.
+    /// Uses instant setFrameOrigin (no animation) so motion feels native.
+    func magnetReposition(finderFrame: NSRect?, contentHeight: CGFloat) {
+        let target = targetFrame(finderFrame: finderFrame, contentHeight: contentHeight)
+        // Only update position/size if they actually changed to avoid redundant compositing
+        if abs(target.minX - frame.minX) > 0.5 ||
+           abs(target.minY - frame.minY) > 0.5 ||
+           abs(target.width - frame.width) > 0.5 {
+            setFrame(target, display: true)
         }
+    }
 
-        setFrame(NSRect(x: x, y: y, width: w, height: contentHeight), display: false)
+    /// Compute where the panel should sit.
+    /// • Finder window visible → dock flush below it, match its width.
+    /// • No Finder window      → bottom-centre of screen, just above the Dock.
+    private func targetFrame(finderFrame: NSRect?, contentHeight: CGFloat) -> NSRect {
+        guard let screen = NSScreen.main else { return frame }
+        let sv = screen.visibleFrame   // excludes Dock & menu bar
+
+        if let f = finderFrame, f.width > 50 {
+            let w = max(BraindropPanel.minWidth, min(f.width, BraindropPanel.maxWidth))
+            let x = max(sv.minX, min(f.minX, sv.maxX - w))
+            let y = max(sv.minY, f.minY - contentHeight)   // flush below window
+            return NSRect(x: x, y: y, width: w, height: contentHeight)
+        } else {
+            let w = BraindropPanel.defaultWidth
+            let x = sv.midX - w / 2
+            return NSRect(x: x, y: sv.minY, width: w, height: contentHeight)
+        }
     }
 
     // MARK: - Animate height
 
-    /// Keep the top edge fixed while animating to a new height.
+    /// Keep the top edge fixed while animating to a new content height.
     func animateHeight(_ newHeight: CGFloat) {
         let current = frame
         let newY     = current.maxY - newHeight

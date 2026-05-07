@@ -163,7 +163,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startTracking() {
         trackingTimer?.invalidate()
-        trackingTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+        // 50 ms ≈ 20 fps — fast enough for smooth magnet-follow, cheap via CGWindowList
+        trackingTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.updatePosition() }
         }
     }
@@ -176,9 +177,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updatePosition() {
         guard let panel = panel, panel.isVisible, let vm = viewModel else { return }
         let ff = finderService.getFinderWindowFrame()
-        guard ff != lastFinderFrame else { return }
+        // Always reposition so the panel magnetically follows Finder drags
         lastFinderFrame = ff
-        panel.reposition(finderFrame: ff, contentHeight: vm.idealHeight)
+        panel.magnetReposition(finderFrame: ff, contentHeight: vm.idealHeight)
     }
 
     // MARK: - Settings

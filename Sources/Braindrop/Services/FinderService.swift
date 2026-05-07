@@ -95,27 +95,34 @@ class FinderService {
         return result.isEmpty ? nil : result
     }
 
+    /// Fast Finder window frame lookup via CGWindowListCopyWindowInfo.
+    /// No AppleScript, no Accessibility permission needed — ~1 ms per call.
     func getFinderWindowFrame() -> NSRect? {
-        let script = """
-        tell application "Finder"
-            try
-                set frontWindow to front window
-                set b to bounds of frontWindow
-                return (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b)
-            on error
-                return missing value
-            end try
-        end tell
-        """
-        let result = runAppleScript(script).trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = result.components(separatedBy: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
-        guard parts.count == 4, let screen = NSScreen.main else { return nil }
-        let screenHeight = screen.frame.height
-        let x = parts[0], top = parts[1], right = parts[2], bottom = parts[3]
-        let width = right - x
-        let height = bottom - top
-        let nsY = screenHeight - bottom
-        return NSRect(x: x, y: nsY, width: width, height: height)
+        guard let screen = NSScreen.main else { return nil }
+        let screenH = screen.frame.height
+
+        guard let list = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+        ) as? [[String: Any]] else { return nil }
+
+        // Windows are ordered front-to-back; grab the first normal Finder window
+        for info in list {
+            guard (info[kCGWindowOwnerName as String] as? String) == "Finder",
+                  (info[kCGWindowLayer as String] as? Int) == 0,
+                  let bd = info[kCGWindowBounds as String] as? [String: CGFloat]
+            else { continue }
+
+            let x = bd["X"] ?? 0
+            let y = bd["Y"] ?? 0        // top-left origin
+            let w = bd["Width"] ?? 0
+            let h = bd["Height"] ?? 0
+            guard w > 50, h > 50 else { continue }    // skip tiny/invisible frames
+
+            // Convert to bottom-left NSRect coordinate space
+            let nsY = screenH - y - h
+            return NSRect(x: x, y: nsY, width: w, height: h)
+        }
+        return nil
     }
 
     private func runAppleScript(_ source: String) -> String {

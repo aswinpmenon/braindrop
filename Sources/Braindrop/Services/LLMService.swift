@@ -323,13 +323,18 @@ class LLMService {
         \(context)
         ── ALWAYS AVAILABLE (macOS built-in) ─────────────────────────────
 
-        Images (sips):
+        Images (sips — ALWAYS use "jpeg" not "jpg" as format name):
+          PNG→JPG:     sips -s format jpeg "photo.png" --out "photo.jpg"
+          JPG→PNG:     sips -s format png "photo.jpg" --out "photo.png"
+          JPG→TIFF:    sips -s format tiff "photo.jpg" --out "photo.tiff"
+          PNG→GIF:     sips -s format gif "photo.png" --out "photo.gif"
           Resize:      sips -Z 1024 "img.jpg"
-          Convert:     sips -s format png "img.jpg" --out "out.png"   (jpeg png gif bmp tiff)
+          Resize+save: sips -Z 1024 "img.jpg" --out "img_sm.jpg"
           Info:        sips -g pixelWidth -g pixelHeight "img.jpg"
-          Compress:    sips -s formatOptions 70 "img.jpg" --out "small.jpg"
-          Batch:       for f in "DIR"/*.jpg; do sips -Z 800 "$f"; done
+          Compress:    sips -s formatOptions low "img.jpg" --out "small.jpg"
+          Batch conv:  for f in *.png; do sips -s format jpeg "$f" --out "${f%.png}.jpg"; done
           Strip EXIF:  sips --deleteProperty all "img.jpg"
+          CRITICAL: format must be one of: jpeg png gif bmp tiff — never "jpg"
 
         Documents — textutil (txt rtf rtfd html doc docx odt — NOT pdf):
           RTF→DOCX:    textutil -convert docx "file.rtf" -output "out.docx"
