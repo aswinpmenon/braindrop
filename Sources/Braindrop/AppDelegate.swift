@@ -16,6 +16,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeyManager = HotkeyManager.shared
     private let settings      = AppSettings.shared
     private let finderService = FinderService.shared
+    private let mlxManager    = MLXServerManager.shared
+    private var mlxCancellable: AnyCancellable?
 
     // MARK: - Launch
 
@@ -24,9 +26,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupPanel()
         hotkeyManager.onHotkey = { [weak self] in self?.togglePanel() }
         hotkeyManager.register(keyCode: settings.hotkeyKeyCode, modifiers: settings.hotkeyModifiers)
+        // Detect installed tools in background so prompts can reflect availability
+        DispatchQueue.global(qos: .utility).async { ToolAvailability.shared.checkAll() }
         NotificationCenter.default.addObserver(
             self, selector: #selector(hotkeyChanged),
             name: .hotkeyChanged, object: nil)
+        // Start the MLX server as an in-process child — no terminal window needed
+        mlxManager.start()
+        // Reflect server state in the menu-bar icon
+        mlxCancellable = mlxManager.$state
+            .receive(on: RunLoop.main)
+            .sink { [weak self] state in self?.updateStatusIcon(for: state) }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        mlxManager.stop()
     }
 
     // MARK: - Status bar
@@ -40,8 +54,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         btn.target  = self
     }
 
+    /// Update the menu-bar icon to reflect MLX server state.
+    private func updateStatusIcon(for state: MLXServerManager.ServerState) {
+        guard let btn = statusItem?.button else { return }
+        switch state {
+        case .idle:
+            btn.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Braindrop")
+            btn.image?.isTemplate = true
+            btn.toolTip = "Braindrop"
+        case .starting:
+            btn.image = NSImage(systemSymbolName: "arrow.clockwise.circle", accessibilityDescription: "Braindrop – starting")
+            btn.image?.isTemplate = true
+            btn.toolTip = "Braindrop – starting MLX server…"
+        case .running:
+            btn.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Braindrop – ready")
+            btn.image?.isTemplate = true
+            btn.toolTip = "Braindrop – ready"
+        case .failed(let msg):
+            btn.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "Braindrop – error")
+            btn.image?.isTemplate = true
+            btn.toolTip = "Braindrop – \(msg)"
+        }
+    }
+
     @objc private func statusBarClicked() {
         let menu = NSMenu()
+
+        // MLX server status
+        let serverStatusTitle: String
+        switch mlxManager.state {
+        case .idle:     serverStatusTitle = "MLX Server: idle"
+        case .starting: serverStatusTitle = "MLX Server: starting…"
+        case .running:  serverStatusTitle = "MLX Server: running ✓"
+        case .failed(let msg): serverStatusTitle = "MLX Server: \(msg)"
+        }
+        let serverItem = NSMenuItem(title: serverStatusTitle, action: nil, keyEquivalent: "")
+        serverItem.isEnabled = false
+        menu.addItem(serverItem)
+        menu.addItem(.separator())
+
         let show = NSMenuItem(title: "Show Braindrop", action: #selector(showPanel), keyEquivalent: "")
         show.target = self
         menu.addItem(show)

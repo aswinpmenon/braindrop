@@ -17,6 +17,15 @@ enum AgentProgress {
     case finalizing
 }
 
+enum TaskKind {
+    /// User is asking ABOUT file content — extract text, answer with LLM (no shell command).
+    case contentQuery
+    /// Runtime lookup needed before acting (find largest then zip, etc.) — probe loop.
+    case discovery
+    /// Everything else — direct shell command via LLM.
+    case simple
+}
+
 class AgentRunner {
     static let shared = AgentRunner()
     private init() {}
@@ -25,6 +34,59 @@ class AgentRunner {
     private let executor = CommandExecutor.shared
     private let maxSteps = 3
 
+    // MARK: - Task classification
+
+    func classifyTask(query: String, files: [FileContext]) -> TaskKind {
+        let q = query.lowercased()
+
+        // Content queries: user wants the LLM to READ and ANSWER about file contents.
+        // These should NOT produce shell commands — they use the content answer path.
+        let contentQueryVerbs = [
+            "summarize", "summary", "tell me about", "what's in", "what does",
+            "what is in", "describe", "analyse", "analyze", "explain",
+            "translate", "transcribe", "what topic", "overview", "review",
+            "what is this", "what are", "is this"
+        ]
+        let readableExts: Set<String> = [
+            "pdf", "docx", "doc", "rtf", "txt", "md",
+            "swift", "py", "js", "ts", "go", "rs", "c", "cpp", "h", "java", "kt",
+            "sh", "csv", "json", "xml", "yaml"
+        ]
+        let hasReadableFiles = files.contains { !$0.isDirectory && readableExts.contains($0.ext) }
+        if hasReadableFiles && contentQueryVerbs.contains(where: { q.contains($0) }) {
+            return .contentQuery
+        }
+
+        // Discovery: need runtime lookup before acting on a file
+        let discoveryTriggers = [
+            "zip the largest", "zip the newest", "zip the oldest", "zip the biggest",
+            "move the largest", "move the newest", "move the oldest",
+            "delete the largest", "copy the largest",
+            "find and zip", "find and move", "find and copy",
+            "find and delete", "find and rename", "find and compress",
+            "duplicate", "duplicates", "find duplicate",
+        ]
+        if discoveryTriggers.contains(where: { q.contains($0) }) {
+            return .discovery
+        }
+
+        return .simple
+    }
+
+    // MARK: - Content query: extract text → LLM text answer
+
+    func answerContentQuery(query: String, files: [FileContext], cwd: String?) async throws -> String {
+        let contents = await FileContentExtractor.extract(files: files)
+        return try await llm.generateContentAnswer(
+            query: query,
+            files: files,
+            cwd: cwd,
+            extractedContents: contents
+        )
+    }
+
+    // MARK: - Simple / discovery: generate shell command
+
     func run(
         query: String,
         files: [FileContext],
@@ -32,8 +94,8 @@ class AgentRunner {
         onProgress: @escaping (AgentProgress) -> Void
     ) async throws -> AgentResult {
 
-        // Simple tasks: skip agentic loop entirely — one LLM call, instant response.
-        guard needsProbing(query: query) else {
+        guard classifyTask(query: query, files: files) == .discovery else {
+            // Simple task: one direct LLM call
             let resp = try await llm.generate(
                 query: query, files: files, cwd: cwd,
                 probeHistory: [], forceDirectAnswer: true
@@ -42,7 +104,7 @@ class AgentRunner {
             throw LLMError.invalidResponse
         }
 
-        // Agentic loop: probe → observe → act, using proper multi-turn conversation.
+        // Discovery: probe → observe → act using multi-turn conversation
         var steps: [AgentStep] = []
         var probeHistory: [(cmd: String, output: String)] = []
         var lastProbeCmd = ""
@@ -58,15 +120,13 @@ class AgentRunner {
                 return AgentResult(command: cmd, steps: steps)
 
             case .probe(let probeCmd):
-                // Stop if the model is stuck repeating the same probe
                 if probeCmd == lastProbeCmd { break }
                 lastProbeCmd = probeCmd
 
                 onProgress(.probing(step: stepIndex, command: probeCmd))
 
                 let result = try await executor.executeProbe(command: probeCmd, workingDirectory: cwd)
-                let out = result.displayOutput
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let out = result.displayOutput.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedOut = String(out.prefix(2000).isEmpty ? "(no output)" : out.prefix(2000))
 
                 steps.append(AgentStep(index: stepIndex, command: probeCmd, output: trimmedOut))
@@ -74,7 +134,7 @@ class AgentRunner {
             }
         }
 
-        // Max probes reached — force a final answer with all gathered context.
+        // Max probes reached — force a final answer
         onProgress(.finalizing)
         let final = try await llm.generate(
             query: query, files: files, cwd: cwd,
@@ -82,23 +142,5 @@ class AgentRunner {
         )
         if case .direct(let cmd) = final { return AgentResult(command: cmd, steps: steps) }
         throw LLMError.invalidResponse
-    }
-
-    // Probe only for tasks where the target can't be embedded in a single pipeline.
-    // "find the largest file and zip it" needs to know the filename before zipping.
-    // "how many files", "word count", "convert this" — all solvable without probing.
-    private func needsProbing(query: String) -> Bool {
-        let q = query.lowercased()
-        let triggers = [
-            // "find X then do something else to it" — need name at runtime
-            "zip the largest", "zip the newest", "zip the oldest", "zip the biggest",
-            "move the largest", "move the newest", "move the oldest",
-            "delete the largest", "copy the largest",
-            "find and zip", "find and move", "find and copy",
-            "find and delete", "find and rename", "find and compress",
-            // Genuinely need runtime comparison
-            "duplicate", "duplicates", "find duplicate",
-        ]
-        return triggers.contains { q.contains($0) }
     }
 }

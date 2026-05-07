@@ -33,6 +33,7 @@ class AppSettings: ObservableObject {
     @Published var autoRunFileDeletion: Bool      { didSet { save("autoRunFileDeletion", autoRunFileDeletion) } }
     @Published var autoRunSystemModification: Bool { didSet { save("autoRunSystemModification", autoRunSystemModification) } }
     @Published var autoRunCommandsWithErrors: Bool { didSet { save("autoRunCommandsWithErrors", autoRunCommandsWithErrors) } }
+    @Published var autoRunContentTasks: Bool       { didSet { save("autoRunContentTasks", autoRunContentTasks) } }
 
     var hotkeyDisplayString: String {
         var p: [String] = []
@@ -94,5 +95,6 @@ class AppSettings: ObservableObject {
         autoRunFileDeletion           = b("autoRunFileDeletion",           false)
         autoRunSystemModification     = b("autoRunSystemModification",     false)
         autoRunCommandsWithErrors     = b("autoRunCommandsWithErrors",     false)
+        autoRunContentTasks           = b("autoRunContentTasks",           false)
     }
 }
